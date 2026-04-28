@@ -1,0 +1,8 @@
+.env
+.env.local
+.env.*.local
+.idea/
+.DS_Store
+tmp/
+temp/
+
