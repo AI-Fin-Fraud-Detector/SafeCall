@@ -64,6 +64,13 @@ EOF
 
 COPY . .
 
+RUN PYTHONDONTWRITEBYTECODE=1 python -m grpc_tools.protoc \
+  -I protos \
+  -I "$(python -c "import grpc_tools, os; print(os.path.join(grpc_tools.__path__[0], '_proto'))")" \
+  --python_out=. \
+  --grpc_python_out=. \
+  protos/voice.proto
+
 EXPOSE 60015
 
 
