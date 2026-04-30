@@ -3,9 +3,12 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        - WHISPER_MODEL=${WHISPER_MODEL}
     ports:
       - "60015:60015"
     environment:
+      - WHISPER_MODEL=${WHISPER_MODEL}
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - TTS_MODEL=${TTS_MODEL:-tts-1}
       - VOICE_MODEL=${VOICE_MODEL:-alloy}

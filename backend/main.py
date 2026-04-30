@@ -25,6 +25,7 @@ load_dotenv()
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 TTS_MODEL = os.getenv("TTS_MODEL", "tts-1")
 VOICE_MODEL = os.getenv("VOICE_MODEL", "alloy")
@@ -52,7 +53,7 @@ class _Session:
             from RealtimeSTT import AudioToTextRecorder
             self.recorder = AudioToTextRecorder(
                 use_microphone=False,
-                model="tiny",
+                model=WHISPER_MODEL,
                 language="en",
                 spinner=False,
                 enable_realtime_transcription=True,
