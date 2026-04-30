@@ -20,6 +20,7 @@ DTYPE = np.int16
 CHUNK_SIZE = 512
 VAD_THRESHOLD = 0.85
 FADE_SAMPLES = int(SAMPLE_RATE * 0.05)  # 50 ms fade-out
+MUTE_MIC_WHILE_PLAYBACK = False         # ignore all mic input while AI is speaking
 SERVER_ADDRESS = os.getenv("SERVER_ADDRESS", "localhost:60015")
 
 
@@ -69,6 +70,9 @@ class EdgeClient:
     def audio_callback(self, indata, frames, time, status):
         if status:
             print(f"\n[Mic Status] {status}", flush=True)
+            return
+
+        if MUTE_MIC_WHILE_PLAYBACK and self.ai_playing:
             return
 
         if self.silero_model is not None and self.ai_playing:
