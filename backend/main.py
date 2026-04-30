@@ -30,16 +30,18 @@ TTS_MODEL = os.getenv("TTS_MODEL", "tts-1")
 VOICE_MODEL = os.getenv("VOICE_MODEL", "alloy")
 
 
-class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
+class _Session:
+    """All state for a single gRPC Session call. One instance per connected client."""
+
     def __init__(self):
         self.recorder = None
         self.interrupt_event = asyncio.Event()
         self.current_task = None
-        self.response_queue = None
-        self.is_prompting = False      # LLM API call in progress
-        self.is_generating_tts = False # TTS generation + streaming in progress
-        self.audio_sent = False        # first TTS chunk has been queued to edge
-        self.pending_prompt = None     # last accepted prompt (for append on early interrupt)
+        self.response_queue = asyncio.Queue()
+        self.is_prompting = False
+        self.is_generating_tts = False
+        self.audio_sent = False
+        self.pending_prompt = None
         self.loop = None
 
     # ─── STT init ────────────────────────────────────────────────────────────
@@ -69,7 +71,6 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
     # ─── Realtime STT callback (runs on RealtimeSTT background thread) ───────
 
     def _on_realtime_update(self, text):
-        """Cancel LLM/TTS generation as soon as speech is detected mid-response."""
         if not text or not text.strip():
             return
         if (self.is_prompting or self.is_generating_tts) and self.loop and self.response_queue is not None:
@@ -78,16 +79,13 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
 
     async def _cancel_on_realtime(self):
         if not (self.is_prompting or self.is_generating_tts):
-            return  # already handled
+            return
         print("\n[REALTIME] Cancelling generation", flush=True)
         self.interrupt_event.set()
         self.is_prompting = False
         self.is_generating_tts = False
         self._cancel_current_task()
         await self._drain_queue()
-        # Do NOT touch audio_sent or pending_prompt here.
-        # The edge interrupt (VAD) will arrive shortly and is the authority
-        # on whether this is an append (audio_sent=False) or fresh start (audio_sent=True).
 
     # ─── Helpers ─────────────────────────────────────────────────────────────
 
@@ -98,7 +96,6 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
             self.current_task = None
 
     async def _drain_queue(self):
-        """Drop audio chunks and stale playback_complete; keep other status messages."""
         kept = []
         while not self.response_queue.empty():
             try:
@@ -106,7 +103,7 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
                 if item.HasField('audio_response'):
                     pass  # drop
                 elif item.HasField('text_status') and dict(item.text_status).get('type') == 'playback_complete':
-                    pass  # drop — superseded by interrupt
+                    pass  # drop
                 else:
                     kept.append(item)
             except asyncio.QueueEmpty:
@@ -116,15 +113,10 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
 
     # ─── gRPC session ─────────────────────────────────────────────────────────
 
-    async def Session(self, request_iterator, context):
-        md = context.invocation_metadata()
-        metadata_dict = {k: v for k, v in md}
-
-        print("\n[CONN] New gRPC Session started, ", end="", flush=True)
-        print("metadata:", metadata_dict, flush=True)
+    async def run(self, request_iterator, context):
+        print("\n[CONN] New gRPC Session started", flush=True)
         self.loop = asyncio.get_event_loop()
         await asyncio.to_thread(self.initialize_stt)
-        self.response_queue = asyncio.Queue()
 
         read_task = asyncio.create_task(self._handle_requests(request_iterator))
 
@@ -165,12 +157,10 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
                     await self._drain_queue()
 
                     if self.audio_sent:
-                        # Audio was already playing on edge → fresh start
                         print("[INTERRUPT] audio_sent=True → fresh start", flush=True)
                         self.pending_prompt = None
                         self.audio_sent = False
                     else:
-                        # Interrupted before any audio reached edge → append next STT
                         print("[INTERRUPT] audio_sent=False → append mode", flush=True)
 
                 elif message.HasField('audio_chunk'):
@@ -194,12 +184,9 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
         try:
             while True:
                 text = await asyncio.to_thread(self.recorder.text)
-                # if not text or not text.strip():
-                #     continue
                 if text is None:
                     text = ""
 
-                # Append to pending prompt if interrupted before any audio was sent
                 if self.pending_prompt and not self.audio_sent:
                     print(f"\n[STT] Appended → '{text}'", flush=True)
                     text = self.pending_prompt + (" " + text if text else "")
@@ -300,9 +287,6 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
             self.is_prompting = False
             self.is_generating_tts = False
             if not self.interrupt_event.is_set():
-                # Natural completion — clear prompt context.
-                # audio_sent stays True: edge is still playing buffered audio.
-                # It resets when the next interrupt or STT result arrives.
                 self.pending_prompt = None
 
     def _resample(self, audio, orig_sr, target_sr):
@@ -319,6 +303,13 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
                 await asyncio.to_thread(self.recorder.stop)
             except Exception:
                 pass
+
+
+class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
+    async def Session(self, request_iterator, context):
+        session = _Session()
+        async for response in session.run(request_iterator, context):
+            yield response
 
 
 async def serve():
