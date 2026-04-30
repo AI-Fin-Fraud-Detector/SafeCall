@@ -304,6 +304,9 @@ class _Session:
         if self.recorder:
             try:
                 await asyncio.to_thread(self.recorder.stop)
+                await asyncio.to_thread(self.recorder.shutdown)
+                del self.recorder
+                self.recorder = None
             except Exception:
                 pass
 
