@@ -44,6 +44,9 @@ class _Session:
         self.audio_sent = False
         self.pending_prompt = None
         self.loop = None
+        self.messages = [
+            {"role": "system", "content": "You are a concise voice assistant."}
+        ]
 
     # ─── STT init ────────────────────────────────────────────────────────────
 
@@ -228,14 +231,13 @@ class _Session:
             # ── LLM ──
             self.is_prompting = True
             print(f"[LLM] Prompting: {text[:60]}...", flush=True)
+            self.messages.append({"role": "user", "content": text})
             llm_response = await client.chat.completions.create(
                 model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are a concise voice assistant."},
-                    {"role": "user", "content": text}
-                ],
+                messages=self.messages,
                 max_tokens=150
             )
+            self.messages.append(llm_response.choices[0].message)
             self.is_prompting = False
 
             if self.interrupt_event.is_set(): return
