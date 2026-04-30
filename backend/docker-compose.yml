@@ -1,0 +1,30 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "60015:60015"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - TTS_MODEL=${TTS_MODEL:-tts-1}
+      - VOICE_MODEL=${VOICE_MODEL:-alloy}
+    restart: unless-stopped
+    networks:
+      - voice-network
+
+  # Edge service (optional - runs on host for microphone access)
+  # edge:
+  #   build:
+  #     context: ./edge
+  #     dockerfile: Dockerfile
+  #   network_mode: "host"
+  #   environment:
+  #     - SERVER_ADDRESS=localhost:60015
+  #   volumes:
+  #     - /dev/snd:/dev/snd
+  #   privileged: true
+
+networks:
+  voice-network:
+    driver: bridge
