@@ -117,7 +117,11 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
     # ─── gRPC session ─────────────────────────────────────────────────────────
 
     async def Session(self, request_iterator, context):
-        print("\n[CONN] New gRPC Session started", flush=True)
+        md = context.invocation_metadata()
+        metadata_dict = {k: v for k, v in md}
+
+        print("\n[CONN] New gRPC Session started, ", end="", flush=True)
+        print("metadata:", metadata_dict, flush=True)
         self.loop = asyncio.get_event_loop()
         await asyncio.to_thread(self.initialize_stt)
         self.response_queue = asyncio.Queue()

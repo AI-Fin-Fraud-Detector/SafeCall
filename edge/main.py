@@ -246,7 +246,12 @@ class EdgeClient:
         print("Recording. Speak now.", flush=True)
 
         try:
-            response_iterator = self.stub.Session(self.request_generator())
+            metadata = [
+                ("authorization", "YOUR_TOKEN"),
+                ("client-id", "abc123"),
+            ]
+
+            response_iterator = self.stub.Session(self.request_generator(), metadata=metadata)
             await self.response_handler(response_iterator)
         except Exception as e:
             print(f"\n[Session Error] {e}", flush=True)
