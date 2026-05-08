@@ -20,9 +20,9 @@ async def connect_to_db():
         pool = await asyncpg.create_pool(
             host=os.getenv("DB_HOST", "db"),
             port=os.getenv("DB_PORT", "5432"),
-            user=os.getenv("DB_USERNAME", "kebbi"),
-            password=os.getenv("DB_PASSWORD", "kebbi"),
-            database=os.getenv("DB_DATABASE_NAME", "kebbi"),
+            user=os.getenv("DB_USERNAME", "safecall"),
+            password=os.getenv("DB_PASSWORD", "safecall"),
+            database=os.getenv("DB_DATABASE_NAME", "safecall"),
         )
         print("[INFO] Database connection pool created successfully.")
 

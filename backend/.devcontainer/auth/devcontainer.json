@@ -1,7 +1,7 @@
 // For format details, see https://aka.ms/devcontainer.json. For config options, see the
 // README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
 {
-  "name": "AIO Kebbi backend auth Dev Container",
+  "name": "SafeCall backend auth Dev Container",
   "dockerComposeFile": [
     "../../docker-compose.yml",
     "./docker-compose.dev.yml",

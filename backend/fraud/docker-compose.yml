@@ -12,7 +12,7 @@ services:
       
       # 數據庫配置
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://postgres:password@db:5432/kebbi
+      - DATABASE_URL=postgresql://postgres:password@db:5432/safecall
       
       # 服務配置
       - SERVICE_PORT=8000
@@ -38,7 +38,7 @@ services:
   db:
     image: postgres:15-alpine
     environment:
-      - POSTGRES_DB=kebbi
+      - POSTGRES_DB=safecall
       - POSTGRES_USER=postgres
       - POSTGRES_PASSWORD=password
     ports:

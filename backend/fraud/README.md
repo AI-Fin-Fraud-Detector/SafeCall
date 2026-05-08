@@ -35,7 +35,7 @@ services:
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - REDIS_URL=redis://redis:6379
-      - DATABASE_URL=postgresql://db:5432/kebbi
+      - DATABASE_URL=postgresql://db:5432/safecall
 ```
 
 ## Anti-Fraud Conversation Strategy
