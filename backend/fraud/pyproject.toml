@@ -1,0 +1,17 @@
+[project]
+name = "fraud"
+version = "0.1.0"
+description = "Anti-fraud communication service with GPT-powered conversation"
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "fastapi>=0.128.0",
+    "setuptools>=80.9.0",
+    "uvicorn>=0.40.0",
+    "openai>=1.0.0",
+    "httpx>=0.27.0",
+    "python-multipart>=0.0.9",
+    # Database dependencies
+    "asyncpg>=0.31.0",
+    "redis>=7.1.0",
+]

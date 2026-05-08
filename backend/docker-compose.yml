@@ -1,0 +1,175 @@
+services:
+  auth:
+    build:
+      context: ./auth
+      dockerfile: Dockerfile
+      args:
+        - NONROOT_USERNAME=ubuntu
+        - PROJECT_PATH=/project/auth
+    restart: on-failure
+    # ports:
+    #   - "8000"
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME}
+      PROJECT_PATH: /project/auth
+    depends_on:
+      db:
+        condition: service_healthy
+  db:
+    image: postgres:18-alpine
+    restart: on-failure
+    # ports:
+    #   - "5432"
+    environment:
+      POSTGRES_USER: ${DB_USERNAME}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_DATABASE_NAME}
+      # PGDATA: /var/lib/postgresql/18/docker
+    volumes:
+      - pg_data:/var/lib/postgresql/18/docker
+      - ./db/:/docker-entrypoint-initdb.d/
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME} -d ${DB_DATABASE_NAME}"]
+      interval: 30s
+      retries: 5
+      start_period: 2s
+  chat:
+    build:
+      context: chat
+      target: prod
+      dockerfile: Dockerfile
+      args:
+        - NONROOT_USERNAME=ubuntu
+        - PROJECT_PATH=/project/chat
+      secrets:
+        - HF_TOKEN
+        - GIT_AUTH_TOKEN
+    restart: on-failure
+    # ports:
+    #   - "8000"
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME}
+      # TTS Service Configuration
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      TTS_MODEL: ${TTS_MODEL:-gpt-4o-mini-tts}
+      VOICE_MODEL: ${VOICE_MODEL:-alloy}
+      # Food Recognition Service Configuration  
+      FOOD_API_URL: ${FOOD_API_URL}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+    depends_on:
+      db:
+        condition: service_healthy
+  fraud:
+    build:
+      context: fraud
+      dockerfile: Dockerfile
+      args:
+        - NONROOT_USERNAME=ubuntu
+        - PROJECT_PATH=/project/fraud
+    restart: on-failure
+    # ports:
+    #   - "8000"
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME}
+      # Anti-Fraud Service Configuration
+      FRAUD_DETECTION_API_URL: ${FRAUD_DETECTION_API_URL}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      # TTS Service Configuration
+      TTS_MODEL: ${TTS_MODEL:-tts-1}
+      VOICE_MODEL: ${VOICE_MODEL:-alloy}
+    depends_on:
+      db:
+        condition: service_healthy
+      push_notification:
+        condition: service_started
+      redis:
+        condition: service_started
+  food_detect:
+    build:
+      context: ./food_detect
+      dockerfile: Dockerfile
+      args:
+        - NONROOT_USERNAME=ubuntu
+        - PROJECT_PATH=/project/food_detect
+    depends_on:
+      db:
+        condition: service_healthy
+  #   # Add other configurations as needed
+  # tts:
+  #   build:
+  #     context: ./tts
+  #     dockerfile: Dockerfile
+  #     args:
+  #       - NONROOT_USERNAME=ubuntu
+  #       - PROJECT_PATH=/project/tts
+  #   # Add other configurations as needed
+  push_notification:
+    build:
+      context: ./push_notification
+      dockerfile: Dockerfile
+      args:
+        - NONROOT_USERNAME=ubuntu
+        - PROJECT_PATH=/project/push_notification
+    # ports:
+    #   - "8000"
+    restart: on-failure
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME}
+      FIREBASE_CREDENTIALS_PATH: /run/secrets/FCM_CREDENTIALS
+      VAPID_PUBLIC_KEY: ${VAPID_PUBLIC_KEY}
+      VAPID_PRIVATE_KEY: ${VAPID_PRIVATE_KEY}
+      VAPID_EMAIL: ${VAPID_EMAIL}
+    secrets:
+      - FCM_CREDENTIALS
+    depends_on:
+      db:
+        condition: service_healthy
+  redis:
+    image: redis:8-alpine
+    restart: on-failure
+    # ports:
+    #   - "6379"
+  nginx:
+    image: nginx:stable-alpine
+    restart: on-failure
+    ports:
+      - "8100:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - auth
+      - chat
+      - fraud
+
+volumes:
+  pg_data:
+
+secrets:
+  HF_TOKEN:
+    environment: HF_TOKEN
+  GIT_AUTH_TOKEN:
+    environment: GIT_AUTH_TOKEN
+  FCM_CREDENTIALS:
+    file: ./secrets/firebase-key.json
