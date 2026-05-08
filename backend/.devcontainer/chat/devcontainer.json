@@ -1,0 +1,35 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/ubuntu
+{
+  "name": "AIO Kebbi backend chat Dev Container",
+  "dockerComposeFile": [
+    "../../docker-compose.yml",
+    "docker-compose.dev.yml",
+  ],
+  // The service vscode connects to
+  "service": "chat",
+  "workspaceFolder": "/project/chat",
+  // This tells Docker to load the .env file when starting the container
+  "overrideCommand": true,
+  // Variables used in all of the container. Rebuild is required if you want to modify
+  "containerEnv": {
+    "GIT_EDITOR": "vim"
+  },
+  // Variables used for the devcontainer.json supporting service / tool
+  //   "remoteEnv": {
+  //     "GIT_AUTH_TOKEN": "${localEnv:GIT_AUTH_TOKEN}"
+  //   },
+  // "onCreateCommand": "",
+  "postCreateCommand": "uv sync --locked && ./downloadModels.sh",
+  // "postStartCommand": "",
+  // "postAttachCommand": {}
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "tamasfe.even-better-toml",
+        "charliermarsh.ruff",
+      ]
+    }
+  }
+}

@@ -1,0 +1,59 @@
+services:
+  fraud-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.lightweight
+    ports:
+      - "8000:8000"
+    environment:
+      # OpenAI配置 - 請設置你的API密鑰
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=gpt-4o-mini
+      
+      # 數據庫配置
+      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=postgresql://postgres:password@db:5432/kebbi
+      
+      # 服務配置
+      - SERVICE_PORT=8000
+      - SERVICE_HOST=0.0.0.0
+      
+    depends_on:
+      - redis
+      - db
+    networks:
+      - fraud-network
+    restart: unless-stopped
+    
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - fraud-network
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+      
+  db:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_DB=kebbi
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    networks:
+      - fraud-network
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db:/docker-entrypoint-initdb.d
+
+networks:
+  fraud-network:
+    driver: bridge
+
+volumes:
+  redis_data:
+  postgres_data:
