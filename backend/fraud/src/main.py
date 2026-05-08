@@ -191,14 +191,6 @@ async def lifespan(app: FastAPI):
             "Redis client could not be initialized. Application cannot start."
         )
 
-    # 初始化GPT管道 - 確保環境變數OPENAI_API_KEY已設置
-    try:
-        # llm = LLMPipeline()  # 這現在會使用GPT
-    except Exception as e:
-        print(f"[ERROR] Failed to initialize GPT pipeline: {e}")
-        raise RuntimeError(f"Cannot start fraud service without GPT pipeline: {e}")
-
-    # tts_service = TTSService()
     yield
     await database.close_db_connection()
     await database.close_redis_connection()
