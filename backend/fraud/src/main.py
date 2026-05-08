@@ -17,6 +17,9 @@ from pydantic import BaseModel
 from .db_manager import database, get_user_latest_conversation
 
 
+class IncomingCallRequest(BaseModel):
+    phone_number: str
+
 class FraudMessage(BaseModel):
     prompt: str
     phone_number: str  # 受話者的手機號碼
@@ -253,6 +256,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.post("/api/fraud/incoming-call")
+async def incoming_call(
+    body: IncomingCallRequest,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+    x_email: str | None = Header(None, alias="X-Email"),
+    x_installation_id: str | None = Header("", alias="X-Installation-Id"),
+):
+    print(
+        f"Received incoming call: {body.phone_number} ({x_email} - {x_user_id})"
+    )
+    return
 
 
 @app.get("/health")
