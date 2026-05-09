@@ -1,0 +1,8 @@
+services:
+  chat:
+    build:
+      target: dev
+    restart: no
+    volumes:
+      - ./chat:/project/chat
+    depends_on: []

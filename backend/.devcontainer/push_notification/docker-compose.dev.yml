@@ -1,0 +1,8 @@
+services:
+  push_notification:
+    build:
+      target: dev
+    restart: no
+    volumes:
+      - ./push_notification/:/project/push_notification/
+    depends_on: []

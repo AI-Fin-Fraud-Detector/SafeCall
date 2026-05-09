@@ -1,0 +1,8 @@
+services:
+  food_detect:
+    build:
+      target: dev
+    restart: no
+    volumes:
+      - ./food_detect:/project/food_detect
+    depends_on: []

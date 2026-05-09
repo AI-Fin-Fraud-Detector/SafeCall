@@ -1,0 +1,8 @@
+services:
+  auth:
+    build:
+      target: dev
+    restart: no
+    volumes:
+      - ./auth:/project/auth
+    depends_on: []
