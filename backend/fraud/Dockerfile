@@ -25,7 +25,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt update \
     && apt install -y --no-install-recommends \
-        ca-certificates
+        ca-certificates \
+        python3-dev \
+        portaudio19-dev
 
 ################################################################################
 
@@ -74,6 +76,46 @@ RUN --mount=type=cache,dst=${UV_CACHE_DIR},uid=1000,gid=1000 \
     --mount=type=bind,source=pyproject.toml,target=${PROJECT_PATH}/pyproject.toml \
     --mount=type=bind,source=uv.lock,target=${PROJECT_PATH}/uv.lock \
     uv sync --locked --no-dev
+
+ARG WHISPER_MODEL
+RUN PYTHONDONTWRITEBYTECODE=1 python - << 'EOF'
+import os
+import torch
+import sys
+import types
+
+sys.modules["pvporcupine"] = types.ModuleType("pvporcupine")
+torch.hub._check_repo_is_trusted = lambda *args, **kwargs: True
+
+from RealtimeSTT import AudioToTextRecorder
+
+whisper_model=os.getenv("WHISPER_MODEL", "tiny")
+recorder_config = {
+    "spinner": False,
+    "use_microphone": False,
+    "model": whisper_model,
+    # "language": "en",
+    "silero_sensitivity": 0.4,
+    "webrtc_sensitivity": 2,
+    "post_speech_silence_duration": 0.25,
+    "min_length_of_recording": 0,
+    "min_gap_between_recordings": 0,
+    # "enable_realtime_transcription": True,
+    "realtime_processing_pause": 0,
+    "realtime_model_type": "base",
+    # "on_realtime_transcription_stabilized": _on_realtime,
+    "no_log_file": True,
+}
+
+# Initialize recorder
+try:
+    recorder: AudioToTextRecorder = AudioToTextRecorder(**recorder_config)
+    print(f"Successfully initalized AudioToTextRecorder ({whisper_model})")
+    recorder.stop()
+    recorder.shutdown()
+except Exception as e:
+    raise RuntimeError(f"Failed to initialize AudioToTextRecorder: {e}")
+EOF
 
 # for compatibility with prod stage COPY when uv is using python from /usr/bin
 RUN mkdir -p /home/${NONROOT_USERNAME}/.local/share/uv/python

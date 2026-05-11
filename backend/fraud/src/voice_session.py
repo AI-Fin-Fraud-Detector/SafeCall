@@ -50,7 +50,7 @@ class _Session:
 
     # ─── Call lifecycle ──────────────────────────────────────────────────────
 
-    async def on_incoming_call(self, conversation_id: str, caller_name: str = ""):
+    async def on_incoming_call(self, conversation_id: str, caller_phone: str = ""):
         self.conversation_id = conversation_id
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -67,10 +67,18 @@ class _Session:
         self.call_active.set()
         await self.response_queue.put(
             voice_pb2.ServerMessage(
-                text_status=make_status("incoming_call", caller_name=caller_name)
+                text_status=make_status("incoming_call", caller_phone=caller_phone)
             )
         )
         print(f"[SESSION] incoming_call → user={self.user_uuid}", flush=True)
+
+    async def on_direct_call(self, conversation_id: str, caller_phone: str = ""):
+        await self.response_queue.put(
+            voice_pb2.ServerMessage(
+                text_status=make_status("direct_call", caller_phone=caller_phone)
+            )
+        )
+        print(f"[SESSION] direct_call → user={self.user_uuid}", flush=True)
 
     async def on_call_end(self, event_type: str):
         self.call_active.clear()

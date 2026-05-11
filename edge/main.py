@@ -208,15 +208,23 @@ class EdgeClient:
                     event_type = status.get("type")
 
                     if event_type == "incoming_call":
-                        caller_name = status.get("caller_name", "Unknown")
-                        print(f"\n[CALL] Incoming call from {caller_name} — starting mic", flush=True)
+                        caller_phone = status.get("caller_phone", "Unknown")
+                        print(f"\n[CALL] Incoming call from {caller_phone} — starting mic", flush=True)
                         self.mic_active = True
 
-                    elif event_type in ("direct_call", "call_end"):
+                    elif event_type == "call_end":
                         print(f"\n[CALL] {event_type} — stopping mic", flush=True)
                         self.mic_active = False
                         self.running = False
                         break
+                        
+                    elif event_type == "direct_call":
+                        caller_phone = status.get("caller_phone", "Unknown")
+                        print(f"\n[CALL] Preparing direct call with {caller_phone}", flush=True)
+                        self.mic_active = True
+                        self.running = False
+                        # initiate webrtc here with another android
+                        # TODO: Implement webrtc initiation
 
                     elif event_type == "playback_complete":
                         await self.playback_queue.put(None)

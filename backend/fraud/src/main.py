@@ -235,6 +235,29 @@ async def incoming_call(
     
     else:
         call_token = await database.set_call_token(caller_phone_number, x_user_id)
+        async with sessions_lock:
+            session = active_sessions.get(x_user_id)
+        if session:
+            await session.on_direct_call(conversation_id, body.phone_number)
+        else:
+            print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
+
+        await send_push(
+            target_user_id=x_user_id,
+            payload=NotificationPayload(
+                title="Incoming Call",
+                body=f"Call from {caller_phone_number}",
+                data={
+                    "type": "incoming_call",
+                    "detail": {
+                        "phone_number": caller_phone_number,
+                    }
+                },
+                silent=True,
+                android_priority="high",
+            ),
+            app="kebbi"
+        )
         return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
 
 
