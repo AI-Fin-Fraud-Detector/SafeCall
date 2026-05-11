@@ -84,9 +84,9 @@ async def format_conversation_for_detection(conversation_id: str) -> str:
         if database.pool:
             async with database.pool.acquire() as conn:
                 query = """
-                    SELECT role, content, created_at 
-                    FROM fraud_messages 
-                    WHERE conversation_id = $1 
+                    SELECT role, content, created_at
+                    FROM messages
+                    WHERE conversation_id = $1
                     AND role IN ('user', 'assistant')
                     ORDER BY created_at ASC
                 """

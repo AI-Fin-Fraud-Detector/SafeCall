@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS push_notification (
     expiration_time TIMESTAMP,
     p256dh TEXT,
     auth TEXT,
-    app TEXT NOT NULL,                     -- identifies which app registered this token
+    app TEXT NOT NULL,                     -- identifies which app registered this token ('host_mobile', 'kebbi')
     platform TEXT,                         -- 'fcm' | 'apns' | 'webpush'
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW(),

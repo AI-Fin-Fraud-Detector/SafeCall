@@ -49,7 +49,7 @@ async def close_redis_connection():
 
 
 async def get_user_latest_conversation(
-    user_uuid: str, target_user_uuid: str
+    user_uuid: str,
 ) -> Optional[Dict]:
     """Retrieves the latest conversation for a given user."""
     if pool is None:
@@ -57,25 +57,21 @@ async def get_user_latest_conversation(
     async with pool.acquire() as conn:
         conversation_record = await conn.fetchrow(
             """
-            SELECT id, title, created_at, updated_at FROM fraud_conversations
-            WHERE user_uuid = $1
-            AND target_user_uuid = $2
+            SELECT id, title, created_at, updated_at FROM conversations
+            WHERE user_uuid = $1 AND type = 'phone'
             ORDER BY updated_at DESC
             LIMIT 1;
             """,
             uuid.UUID(user_uuid),
-            uuid.UUID(target_user_uuid),
         )
 
         if not conversation_record:
-            print(
-                f"[INFO] No conversation found for user {user_uuid} with target {target_user_uuid}"
-            )
+            print(f"[INFO] No conversation found for user {user_uuid}")
             return None
 
         messages_records = await conn.fetch(
             """
-            SELECT id, role, content FROM fraud_messages
+            SELECT id, role, content FROM messages
             WHERE conversation_id = $1
             ORDER BY created_at ASC;
             """,
@@ -95,9 +91,7 @@ async def get_user_latest_conversation(
         }
 
 
-async def create_conversation(
-    user_uuid: str, target_user_uuid: str
-) -> str:  # Removed system_prompt parameter
+async def create_conversation(user_uuid: str) -> str:
     """Creates a new conversation and adds the system message."""
     if pool is None:
         raise Exception("Database connection pool is not initialized.")
@@ -105,15 +99,14 @@ async def create_conversation(
         conversation_id = uuid.uuid4()
         await conn.execute(
             """
-            INSERT INTO fraud_conversations (id, user_uuid, target_user_uuid)
-            VALUES ($1, $2, $3);
+            INSERT INTO conversations (id, user_uuid, type)
+            VALUES ($1, $2, 'phone');
             """,
             conversation_id,
             uuid.UUID(user_uuid),
-            uuid.UUID(target_user_uuid),
         )
         print(
-            f"[INFO] Created new conversation {conversation_id} for user {user_uuid} with target {target_user_uuid}"
+            f"[INFO] Created new conversation {conversation_id} for user {user_uuid}"
         )
         # await add_message(str(conversation_id), "system", SYSTEM_PROMPT) # Use imported SYSTEM_PROMPT
         return str(conversation_id)
@@ -127,7 +120,7 @@ async def add_message(conversation_id: str, role: str, content: str) -> str:
         message_id = uuid.uuid4()
         await conn.execute(
             """
-            INSERT INTO fraud_messages (id, conversation_id, role, content)
+            INSERT INTO messages (id, conversation_id, role, content)
             VALUES ($1, $2, $3, $4);
             """,
             message_id,
@@ -138,7 +131,7 @@ async def add_message(conversation_id: str, role: str, content: str) -> str:
         # Update conversation's updated_at timestamp
         await conn.execute(
             """
-            UPDATE fraud_conversations
+            UPDATE conversations
             SET updated_at = NOW()
             WHERE id = $1;
             """,
