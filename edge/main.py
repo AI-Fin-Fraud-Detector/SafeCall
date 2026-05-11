@@ -20,8 +20,9 @@ DTYPE = np.int16
 CHUNK_SIZE = 512
 VAD_THRESHOLD = 0.85
 FADE_SAMPLES = int(SAMPLE_RATE * 0.05)  # 50 ms fade-out
-MUTE_MIC_WHILE_PLAYBACK = False         # ignore all mic input while AI is speaking
+MUTE_MIC_WHILE_PLAYBACK = False
 SERVER_ADDRESS = os.getenv("SERVER_ADDRESS", "localhost:60015")
+EDGE_TOKEN = os.getenv("EDGE_TOKEN", "")
 
 
 class EdgeClient:
@@ -32,14 +33,16 @@ class EdgeClient:
         self.ai_playing = False
         self.interrupt_queue = asyncio.Queue()
         self.audio_input_queue = asyncio.Queue(maxsize=200)
-        self.playback_queue = asyncio.Queue()      # audio bytes waiting to play
-        self.playback_stop_event = asyncio.Event() # signals worker to fade + stop
+        self.playback_queue = asyncio.Queue()
+        self.playback_stop_event = asyncio.Event()
         self.mic_stream = None
         self.output_stream = None
         self.interrupt_pending = False
         self.silero_model = None
         self.running = True
         self.loop = None
+        # Gates whether mic audio is forwarded; set on incoming_call, cleared on call_end
+        self.mic_active = False
 
     # ─── Connection ──────────────────────────────────────────────────────────
 
@@ -72,6 +75,9 @@ class EdgeClient:
             print(f"\n[Mic Status] {status}", flush=True)
             return
 
+        if not self.mic_active:
+            return
+
         if MUTE_MIC_WHILE_PLAYBACK and self.ai_playing:
             return
 
@@ -86,7 +92,7 @@ class EdgeClient:
                     print(f"\n[Barge-in] Speech detected ({speech_prob:.2f})", flush=True)
                     self.ai_playing = False
                     self.interrupt_pending = True
-                    self.playback_stop_event.set()  # worker will fade then stop
+                    self.playback_stop_event.set()
                     if self.loop:
                         self.loop.call_soon_threadsafe(self.interrupt_queue.put_nowait, True)
             except Exception as e:
@@ -120,22 +126,20 @@ class EdgeClient:
     # ─── Playback worker ─────────────────────────────────────────────────────
 
     async def _playback_worker(self):
-        """Owns the output stream. On interrupt: drain queue and fade; stream stays open."""
         chunks_written = 0
         while self.running:
 
-            # ── Interrupt: collect remaining chunks, fade out, stay open ──
             if self.playback_stop_event.is_set():
                 chunks = []
                 while not self.playback_queue.empty():
                     try:
                         item = self.playback_queue.get_nowait()
-                        if item is not None:  # skip sentinel
+                        if item is not None:
                             chunks.append(item)
                     except asyncio.QueueEmpty:
                         break
                 self.playback_stop_event.clear()
-                print(f"\n[Worker] Interrupt drain: {len(chunks)} chunk(s) in queue, fading", flush=True)
+                print(f"\n[Worker] Interrupt drain: {len(chunks)} chunk(s), fading", flush=True)
 
                 if chunks and self.output_stream:
                     data = np.concatenate(
@@ -148,45 +152,37 @@ class EdgeClient:
                             asyncio.to_thread(self.output_stream.write, data[:fade_len].astype(DTYPE)),
                             timeout=2.0
                         )
-                        print(f"\n[Worker] Fade complete", flush=True)
-                    except asyncio.TimeoutError:
-                        print(f"\n[Worker] Fade write TIMED OUT", flush=True)
-                    except Exception as e:
-                        print(f"\n[Worker] Fade write error: {e}", flush=True)
+                    except (asyncio.TimeoutError, Exception) as e:
+                        print(f"\n[Worker] Fade error: {e}", flush=True)
                 chunks_written = 0
                 continue
 
-            # ── Wait for the next chunk ──
             try:
                 chunk = await asyncio.wait_for(self.playback_queue.get(), timeout=0.05)
             except asyncio.TimeoutError:
                 continue
 
-            # Stop event arrived while waiting — discard; drain loop runs next
             if self.playback_stop_event.is_set():
                 continue
 
-            # Sentinel: backend finished streaming, all queued audio now played
             if chunk is None:
-                print(f"\n[Worker] Sentinel received after {chunks_written} chunks", flush=True)
+                print(f"\n[Worker] Sentinel after {chunks_written} chunks", flush=True)
                 self.ai_playing = False
                 chunks_written = 0
                 continue
 
             if chunks_written == 0:
-                print(f"\n[Worker] Starting playback (stream active={self.output_stream.active if self.output_stream else 'None'})", flush=True)
+                print(f"\n[Worker] Starting playback", flush=True)
             chunks_written += 1
-            self.interrupt_pending = False  # new audio = barge-in cycle over
+            self.interrupt_pending = False
 
             try:
                 await asyncio.wait_for(
                     asyncio.to_thread(self.output_stream.write, np.frombuffer(chunk, dtype=DTYPE)),
                     timeout=2.0
                 )
-            except asyncio.TimeoutError:
-                print(f"\n[Worker] Write TIMED OUT on chunk {chunks_written}", flush=True)
-            except Exception as e:
-                print(f"\n[Worker] Write error on chunk {chunks_written}: {e}", flush=True)
+            except (asyncio.TimeoutError, Exception) as e:
+                print(f"\n[Worker] Write error: {e}", flush=True)
 
     # ─── gRPC receive ─────────────────────────────────────────────────────────
 
@@ -197,7 +193,6 @@ class EdgeClient:
             dtype=DTYPE
         )
         self.output_stream.start()
-
         playback_task = asyncio.create_task(self._playback_worker())
 
         try:
@@ -210,11 +205,24 @@ class EdgeClient:
 
                 elif response.HasField('text_status'):
                     status = dict(response.text_status)
-                    print(f"\n[Server JSON] {json.dumps(status, ensure_ascii=False)}", flush=True)
-                    if status.get("type") == "playback_complete":
-                        # Don't set ai_playing=False here — audio is still in playback_queue.
-                        # Send a sentinel so the worker clears it after draining.
+                    event_type = status.get("type")
+
+                    if event_type == "incoming_call":
+                        caller_name = status.get("caller_name", "Unknown")
+                        print(f"\n[CALL] Incoming call from {caller_name} — starting mic", flush=True)
+                        self.mic_active = True
+
+                    elif event_type in ("direct_call", "call_end"):
+                        print(f"\n[CALL] {event_type} — stopping mic", flush=True)
+                        self.mic_active = False
+                        self.running = False
+                        break
+
+                    elif event_type == "playback_complete":
                         await self.playback_queue.put(None)
+
+                    else:
+                        print(f"\n[Server] {json.dumps(status, ensure_ascii=False)}", flush=True)
 
         except Exception as e:
             print(f"\n[Response Error] {e}", flush=True)
@@ -236,9 +244,7 @@ class EdgeClient:
         await self.connect()
         self.load_vad()
 
-        await self.audio_input_queue.put(b'\x00' * 1024)  # prime the session
-
-        print("Starting microphone stream...", flush=True)
+        print("Starting microphone stream (waiting for incoming call)...", flush=True)
         self.mic_stream = sd.InputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -247,14 +253,9 @@ class EdgeClient:
             blocksize=CHUNK_SIZE
         )
         self.mic_stream.start()
-        print("Recording. Speak now.", flush=True)
 
         try:
-            metadata = [
-                ("authorization", "YOUR_TOKEN"),
-                ("client-id", "abc123"),
-            ]
-
+            metadata = [("authorization", EDGE_TOKEN)]
             response_iterator = self.stub.Session(self.request_generator(), metadata=metadata)
             await self.response_handler(response_iterator)
         except Exception as e:

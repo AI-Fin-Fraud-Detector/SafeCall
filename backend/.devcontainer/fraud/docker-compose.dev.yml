@@ -1,0 +1,8 @@
+services:
+  fraud:
+    build:
+      target: dev
+    restart: no
+    volumes:
+      - ./fraud:/project/fraud
+    depends_on: []
