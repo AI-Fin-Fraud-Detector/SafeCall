@@ -181,8 +181,10 @@ class _Session:
                 realtime_model_type="tiny",
                 realtime_processing_pause=0.05,
                 init_realtime_after_seconds=0.09,
+                no_log_file=True,
             )
             self.recorder.feed_audio(b"\x00" * 1024)
+            print("[STT] Initialized successfully", flush=True)
         except Exception as e:
             print(f"[STT] Init failed: {e}", flush=True)
             self.recorder = None

@@ -77,6 +77,45 @@ RUN --mount=type=cache,dst=${UV_CACHE_DIR},uid=1000,gid=1000 \
     --mount=type=bind,source=uv.lock,target=${PROJECT_PATH}/uv.lock \
     uv sync --locked --no-dev
 
+# for compatibility with prod stage COPY when uv is using python from /usr/bin
+RUN mkdir -p /home/${NONROOT_USERNAME}/.local/share/uv/python
+
+
+################################################################################
+
+FROM python-base AS dev
+ARG DEBIAN_FRONTEND=noninteractive
+    # Copy from the cache instead of linking since it's a mounted volume
+ENV UV_LINK_MODE=copy \
+    # uv
+    UV_CACHE_DIR="/root/.cache/uv"
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && apt-get install --no-install-recommends -y \
+        # useful tools
+        git vim wget curl tmux ca-certificates build-essential
+
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+
+WORKDIR ${PROJECT_PATH}
+
+CMD ["sleep", "infinity"]
+
+################################################################################
+
+FROM python-base AS prod
+ARG DEBIAN_FRONTEND=noninteractive
+ARG NONROOT_USERNAME
+
+WORKDIR ${PROJECT_PATH}
+
+COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare /home/${NONROOT_USERNAME}/.local/share/uv/python /home/${NONROOT_USERNAME}/.local/share/uv/python`
+COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare ${VENV_PATH} ${VENV_PATH}
+
+USER ${NONROOT_USERNAME}
+
 ARG WHISPER_MODEL
 RUN PYTHONDONTWRITEBYTECODE=1 python - << 'EOF'
 import os
@@ -117,42 +156,6 @@ except Exception as e:
     raise RuntimeError(f"Failed to initialize AudioToTextRecorder: {e}")
 EOF
 
-# for compatibility with prod stage COPY when uv is using python from /usr/bin
-RUN mkdir -p /home/${NONROOT_USERNAME}/.local/share/uv/python
-
-
-################################################################################
-
-FROM python-base AS dev
-ARG DEBIAN_FRONTEND=noninteractive
-    # Copy from the cache instead of linking since it's a mounted volume
-ENV UV_LINK_MODE=copy \
-    # uv
-    UV_CACHE_DIR="/root/.cache/uv"
-
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked \
-    apt-get update \
-    && apt-get install --no-install-recommends -y \
-        # useful tools
-        git vim wget curl tmux ca-certificates build-essential
-
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-
-WORKDIR ${PROJECT_PATH}
-
-CMD ["sleep", "infinity"]
-
-################################################################################
-
-FROM python-base AS prod
-ARG DEBIAN_FRONTEND=noninteractive
-ARG NONROOT_USERNAME
-
-WORKDIR ${PROJECT_PATH}
-
-COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare /home/${NONROOT_USERNAME}/.local/share/uv/python /home/${NONROOT_USERNAME}/.local/share/uv/python
-COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare ${VENV_PATH} ${VENV_PATH}
 
 COPY --exclude=.devcontainer/ --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} . .
 
