@@ -284,6 +284,18 @@ async def call_end(
         session = active_sessions.get(body.callee_user_id)
     if session:
         await session.on_call_end("call_end")
+    send_push(
+        target_user_id=x_user_id,
+        payload=NotificationPayload(
+            data={
+                "type": "call_event",
+                "action": "hangup"
+            },
+            silent=True,
+            android_priority="high",
+        ),
+        app="host_mobile"
+    )
     return {"status": "ok"}
 
 

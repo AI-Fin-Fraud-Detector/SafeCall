@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import os
 import uuid
 import numpy as np
@@ -7,17 +8,26 @@ import voice_pb2
 from google.protobuf.struct_pb2 import Struct
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-TTS_MODEL = os.getenv("TTS_MODEL", "tts-1")
+if not OPENAI_API_KEY:
+    raise Exception("OpenAI API key not configured")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 VOICE_MODEL = os.getenv("VOICE_MODEL", "alloy")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 
-SYSTEM_PROMPT = (
-    "You are an AI assistant answering a phone call on behalf of the user. "
-    "Engage naturally with the caller. Be concise and helpful."
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+from const import (
+    ANTI_FRAUD_SYSTEM_PROMPT as SYSTEM_PROMPT,
+    MAX_TOKENS,
+    TEMPERATURE,
+    TOP_P,
 )
 
 
 def make_status(type: str, **kwargs) -> Struct:
+    if "type" in kwargs:
+        raise ValueError("Status kwargs cannot contain 'type' key")
     s = Struct()
     s.update({"type": type, **kwargs})
     return s
@@ -82,11 +92,14 @@ class _Session:
 
     async def on_call_end(self, event_type: str):
         self.call_active.clear()
-        self.call_ended.set()
         self._cancel_current_task()
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status(event_type))
         )
+        if self.recorder:
+            await asyncio.to_thread(self.recorder.stop)
+            await asyncio.to_thread(self.recorder.shutdown)
+            await asyncio.to_thread(self._initialize_stt)
         print(f"[SESSION] {event_type} → user={self.user_uuid}", flush=True)
 
     # ─── DB helpers ─────────────────────────────────────────────────────────
@@ -193,6 +206,8 @@ class _Session:
         try:
             while True:
                 text = await asyncio.to_thread(self.recorder.text)
+                if not self.call_active.is_set():
+                    continue
                 if not text:
                     text = ""
                 is_append = bool(self.pending_prompt and not self.audio_sent)
@@ -223,8 +238,6 @@ class _Session:
 
     async def _process_and_respond(self, text: str, is_append: bool = False):
         try:
-            if not OPENAI_API_KEY:
-                return
             from openai import AsyncOpenAI
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
@@ -232,47 +245,9 @@ class _Session:
                 return
 
             self.is_prompting = True
+            await self._prepare_user_message(text, is_append)
 
-            if is_append:
-                # Find the last user message and update it; delete everything after it
-                last_user_idx = next(
-                    (i for i in range(len(self.messages) - 1, -1, -1) if self.messages[i]["role"] == "user"),
-                    None,
-                )
-                if last_user_idx is not None:
-                    stale_ids = [m["id"] for m in self.messages[last_user_idx + 1:] if m.get("id")]
-                    del self.messages[last_user_idx + 1:]
-                    self.messages[last_user_idx]["content"] = text
-                    old_id = self.messages[last_user_idx].get("id")
-                    if self.db_pool and self.conversation_id:
-                        async with self.db_pool.acquire() as conn:
-                            if old_id:
-                                await conn.execute(
-                                    "UPDATE messages SET content = $1 WHERE id = $2",
-                                    text, old_id,
-                                )
-                            if stale_ids:
-                                await conn.execute(
-                                    "DELETE FROM messages WHERE id = ANY($1::uuid[])",
-                                    stale_ids,
-                                )
-                else:
-                    # No prior user message found; fall through to normal append
-                    user_id = await self._save_message("user", text)
-                    self.messages.append({"id": user_id, "role": "user", "content": text})
-            else:
-                user_id = await self._save_message("user", text)
-                self.messages.append({"id": user_id, "role": "user", "content": text})
-
-            llm_messages = [{"role": m["role"], "content": m["content"]} for m in self.messages]
-            llm_resp = await client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=llm_messages,
-                max_tokens=150,
-            )
-            response_text = llm_resp.choices[0].message.content
-            asst_id = await self._save_message("assistant", response_text)
-            self.messages.append({"id": asst_id, "role": "assistant", "content": response_text})
+            response_text = await self._call_llm(client)
             self.is_prompting = False
 
             if self.interrupt_event.is_set():
@@ -283,33 +258,8 @@ class _Session:
             )
 
             self.is_generating_tts = True
-            tts_resp = await client.audio.speech.create(
-                model=TTS_MODEL,
-                voice=VOICE_MODEL,
-                input=response_text,
-                response_format="pcm",
-            )
+            await self._stream_tts(client, response_text)
 
-            if self.interrupt_event.is_set():
-                return
-
-            audio_24k = np.frombuffer(tts_resp.content, dtype=np.int16).astype(np.float32) / 32767.0
-            audio_16k = self._resample(audio_24k, 24000, 16000)
-            audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
-
-            chunk_size = 1024
-            for i in range(0, len(audio_bytes), chunk_size):
-                if self.interrupt_event.is_set():
-                    return
-                if not self.audio_sent:
-                    self.audio_sent = True
-                await self.response_queue.put(
-                    voice_pb2.ServerMessage(audio_response=audio_bytes[i:i + chunk_size])
-                )
-
-            await self.response_queue.put(
-                voice_pb2.ServerMessage(text_status=make_status("playback_complete"))
-            )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -319,6 +269,78 @@ class _Session:
             self.is_generating_tts = False
             if not self.interrupt_event.is_set():
                 self.pending_prompt = None
+
+    async def _prepare_user_message(self, text: str, is_append: bool):
+        if is_append:
+            last_user_idx = next(
+                (i for i in range(len(self.messages) - 1, -1, -1) if self.messages[i]["role"] == "user"),
+                None,
+            )
+            if last_user_idx is not None:
+                stale_ids = [m["id"] for m in self.messages[last_user_idx + 1:] if m.get("id")]
+                del self.messages[last_user_idx + 1:]
+                self.messages[last_user_idx]["content"] = text
+                old_id = self.messages[last_user_idx].get("id")
+                if self.db_pool and self.conversation_id:
+                    async with self.db_pool.acquire() as conn:
+                        if old_id:
+                            await conn.execute(
+                                "UPDATE messages SET content = $1 WHERE id = $2",
+                                text, old_id,
+                            )
+                        if stale_ids:
+                            await conn.execute(
+                                "DELETE FROM messages WHERE id = ANY($1::uuid[])",
+                                stale_ids,
+                            )
+                return
+        user_id = await self._save_message("user", text)
+        self.messages.append({"id": user_id, "role": "user", "content": text})
+
+    async def _call_llm(self, client) -> str:
+        llm_messages = [{"role": m["role"], "content": m["content"]} for m in self.messages]
+        llm_resp = await client.chat.completions.create(
+            model=OPENAI_MODEL,
+            messages=llm_messages,
+            max_tokens=MAX_TOKENS,
+            temperature=TEMPERATURE,
+            top_p=TOP_P,
+            frequency_penalty=0.2,  # 避免重複
+            presence_penalty=0.1,  # 鼓勵新內容
+        )
+        response_text = llm_resp.choices[0].message.content
+        asst_id = await self._save_message("assistant", response_text)
+        self.messages.append({"id": asst_id, "role": "assistant", "content": response_text})
+        return response_text
+
+    async def _stream_tts(self, client, response_text: str):
+        tts_resp = await client.audio.speech.create(
+            model=TTS_MODEL,
+            voice=VOICE_MODEL,
+            input=response_text,
+            response_format="pcm",
+        )
+
+        if self.interrupt_event.is_set():
+            return
+
+        audio_24k = np.frombuffer(tts_resp.content, dtype=np.int16).astype(np.float32) / 32767.0
+        audio_16k = self._resample(audio_24k, 24000, 16000)
+        audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
+
+        chunk_size = 1024
+        for i in range(0, len(audio_bytes), chunk_size):
+            if self.interrupt_event.is_set():
+                return
+            if not self.audio_sent:
+                self.audio_sent = True
+            await self.response_queue.put(
+                voice_pb2.ServerMessage(audio_response=audio_bytes[i:i + chunk_size])
+            )
+
+        await self.response_queue.put(
+            voice_pb2.ServerMessage(text_status=make_status("playback_complete"))
+        )
 
     # ─── Helpers ─────────────────────────────────────────────────────────────
 
