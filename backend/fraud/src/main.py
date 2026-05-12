@@ -202,8 +202,8 @@ async def incoming_call(
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
 
-    conversation_id = await database.create_conversation(x_user_id)
     caller_phone_number = body.phone_number
+    conversation_id = await database.create_conversation(x_user_id, caller_phone_number)
     
     is_fraud_detection_enabled = await database.is_fraud_detection_enabled(x_user_id)
 
@@ -224,6 +224,7 @@ async def incoming_call(
                     "type": "incoming_call",
                     "detail": {
                         "phone_number": caller_phone_number,
+                        "conversation_id": conversation_id,
                     }
                 },
                 silent=False,
@@ -297,6 +298,206 @@ async def call_end(
         app="host_mobile"
     )
     return {"status": "ok"}
+
+@app.get("/api/fraud/conversations")
+async def get_conversations(
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+    before: str | None = None,
+    limit: int = 50,
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        if before:
+            try:
+                before_uuid = uuid.UUID(before)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid before cursor")
+            rows = await conn.fetch(
+                """
+                SELECT id, title, metadata, created_at, updated_at
+                FROM conversations
+                WHERE user_uuid = $1 AND type = 'phone'
+                  AND created_at < (SELECT created_at FROM conversations WHERE id = $2)
+                ORDER BY created_at DESC
+                LIMIT $3
+                """,
+                uuid.UUID(x_user_id), before_uuid, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, title, metadata, created_at, updated_at
+                FROM conversations
+                WHERE user_uuid = $1 AND type = 'phone'
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                uuid.UUID(x_user_id), limit,
+            )
+
+    conversations = [
+        {
+            "conversation_id": str(r["id"]),
+            "title": r["title"],
+            "metadata": r["metadata"],
+            "created_at": r["created_at"].isoformat(),
+            "updated_at": r["updated_at"].isoformat(),
+        }
+        for r in rows
+    ]
+    return {
+        "conversations": conversations,
+        "next_cursor": conversations[-1]["conversation_id"] if len(conversations) == limit else None,
+    }
+
+    
+@app.get("/api/fraud/conversations/{conversation_id}")
+async def get_conversation_info(
+    conversation_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation_id")
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM conversations WHERE id = $1 AND user_uuid = $2 AND type = 'phone'",
+            conv_uuid, uuid.UUID(x_user_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {
+            "conversation_id": str(row["id"]),
+            "title": row["title"],
+            "metadata": row["metadata"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+    
+
+@app.get("/api/fraud/conversations/{conversation_id}/messages")
+async def get_messages(
+    conversation_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+    before: str | None = None,
+    limit: int = 50,
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation_id")
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id FROM conversations WHERE id = $1 AND user_uuid = $2 AND type = 'phone'",
+            conv_uuid, uuid.UUID(x_user_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if before:
+            try:
+                before_uuid = uuid.UUID(before)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid before cursor")
+            rows = await conn.fetch(
+                """
+                SELECT id, role, content, metadata, created_at, edited_at
+                FROM messages
+                WHERE conversation_id = $1
+                  AND role != 'system'
+                  AND created_at < (SELECT created_at FROM messages WHERE id = $2)
+                ORDER BY created_at DESC
+                LIMIT $3
+                """,
+                conv_uuid, before_uuid, limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, role, content, metadata, created_at, edited_at
+                FROM messages
+                WHERE conversation_id = $1
+                  AND role != 'system'
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                conv_uuid, limit,
+            )
+
+    messages = [
+        {
+            "id": str(r["id"]),
+            "role": r["role"],
+            "content": r["content"],
+            "metadata": r["metadata"],
+            "created_at": r["created_at"].isoformat(),
+            "edited_at": r["edited_at"].isoformat() if r["edited_at"] else None,
+        }
+        for r in reversed(rows)
+    ]
+    return {
+        "messages": messages,
+        "next_cursor": messages[0]["id"] if len(messages) == limit else None,
+    }
+
+
+@app.get("/api/fraud/conversations/{conversation_id}/messages/{message_id}")
+async def get_message(
+    conversation_id: str,
+    message_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+        msg_uuid = uuid.UUID(message_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation_id or message_id")
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, role, content, metadata, created_at, edited_at FROM messages WHERE id = $1 AND conversation_id = $2",
+            msg_uuid, conv_uuid,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+    return {
+        "id": str(row["id"]),
+        "role": row["role"],
+        "content": row["content"],
+        "metadata": row["metadata"],
+        "created_at": row["created_at"].isoformat(),
+        "edited_at": row["edited_at"].isoformat() if row["edited_at"] else None,
+    }
 
 
 @app.get("/health")

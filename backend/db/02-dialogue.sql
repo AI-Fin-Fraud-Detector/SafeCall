@@ -7,6 +7,7 @@ CREATE TABLE IF NOT EXISTS conversations (
         REFERENCES users(uuid)
         ON DELETE CASCADE,
     title TEXT,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

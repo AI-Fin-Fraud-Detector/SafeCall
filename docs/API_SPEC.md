@@ -347,3 +347,274 @@ push_notification (
   updated_at   TIMESTAMP DEFAULT NOW()
 )
 ```
+
+---
+
+# Fraud Detection Service — API Specification
+
+Base URL (via nginx): `/api/fraud`
+
+All `/api/fraud/*` endpoints are behind nginx `auth_request`. After token validation, nginx injects `X-User-ID` and `X-Email` headers into the upstream request — clients should **not** send these manually.
+
+---
+
+## Authenticated Endpoints
+
+### POST /api/fraud/incoming-call
+
+Register an incoming phone call. Creates a conversation and optionally triggers fraud detection (if enabled for the user).
+
+**Request headers**
+
+| Header | Description |
+|---|---|
+| `X-Installation-Id` | Edge device installation ID |
+
+**Request body** (`application/json`)
+
+| Field | Type | Description |
+|---|---|---|
+| `phone_number` | string | Caller's phone number |
+
+**Response `200` (fraud detection enabled)**
+
+```json
+{
+  "status": "ok",
+  "fraud_detection": "enabled"
+}
+```
+
+**Response `200` (fraud detection disabled)**
+
+```json
+{
+  "status": "ok",
+  "fraud_detection": "disabled",
+  "call_token": "abc123..."
+}
+```
+
+A push notification is sent to the callee's Kebbi device in both cases. The enabled variant includes `conversation_id` in the notification payload.
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+
+---
+
+### POST /api/fraud/direct-call
+
+Callee manually answered the call; edge should stop handling it.
+
+**Request body** (`application/json`)
+
+| Field | Type | Description |
+|---|---|---|
+| `callee_user_id` | string | UUID of the user who answered |
+
+**Response `200`**
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+### POST /api/fraud/call-end
+
+Call has ended; edge device should stop the session.
+
+**Request body** (`application/json`)
+
+| Field | Type | Description |
+|---|---|---|
+| `callee_user_id` | string | UUID of the user whose call ended |
+
+**Response `200`**
+
+```json
+{ "status": "ok" }
+```
+
+---
+
+### GET /api/fraud/conversations
+
+List the authenticated user's phone conversations, most recent first. Supports cursor-based pagination.
+
+**Query parameters**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `before` | string (UUID) | — | Cursor: return only conversations before this ID |
+| `limit` | integer | `50` | Page size (1–200) |
+
+**Response `200`**
+
+```json
+{
+  "conversations": [
+    {
+      "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+      "title": null,
+      "metadata": { "caller_phone_number": "+886912345678" },
+      "created_at": "2026-05-12T10:30:00+00:00",
+      "updated_at": "2026-05-12T10:35:00+00:00"
+    }
+  ],
+  "next_cursor": "550e8400-e29b-41d4-a716-446655440001"
+}
+```
+
+`next_cursor` is `null` when there are no more pages.
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `limit must be between 1 and 200` |
+| `400` | `Invalid before cursor` |
+| `503` | `Database unavailable` |
+
+---
+
+### GET /api/fraud/conversations/{conversation_id}
+
+Get a single conversation's metadata.
+
+**Path parameter**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `conversation_id` | string (UUID) | Conversation UUID |
+
+**Response `200`**
+
+```json
+{
+  "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "title": null,
+  "metadata": { "caller_phone_number": "+886912345678" },
+  "created_at": "2026-05-12T10:30:00+00:00",
+  "updated_at": "2026-05-12T10:35:00+00:00"
+}
+```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `Invalid conversation_id` |
+| `404` | `Conversation not found` |
+| `503` | `Database unavailable` |
+
+---
+
+### GET /api/fraud/conversations/{conversation_id}/messages
+
+Get messages for a conversation (excluding system messages), in chronological order. Supports cursor-based pagination.
+
+**Path parameter**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `conversation_id` | string (UUID) | Conversation UUID |
+
+**Query parameters**
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `before` | string (UUID) | — | Cursor: return only messages before this ID |
+| `limit` | integer | `50` | Page size (1–200) |
+
+**Response `200`**
+
+```json
+{
+  "messages": [
+    {
+      "id": "660e8400-e29b-41d4-a716-446655440000",
+      "role": "user",
+      "content": "Hello?",
+      "metadata": {},
+      "created_at": "2026-05-12T10:30:05+00:00",
+      "edited_at": null
+    }
+  ],
+  "next_cursor": "660e8400-e29b-41d4-a716-446655440001"
+}
+```
+
+`next_cursor` is `null` when there are no more pages.
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `Invalid conversation_id` |
+| `400` | `limit must be between 1 and 200` |
+| `400` | `Invalid before cursor` |
+| `404` | `Conversation not found` |
+| `503` | `Database unavailable` |
+
+---
+
+### GET /api/fraud/conversations/{conversation_id}/messages/{message_id}
+
+Get a single message by ID.
+
+**Path parameters**
+
+| Parameter | Type | Description |
+|---|---|---|
+| `conversation_id` | string (UUID) | Conversation UUID |
+| `message_id` | string (UUID) | Message UUID |
+
+**Response `200`**
+
+```json
+{
+  "id": "660e8400-e29b-41d4-a716-446655440000",
+  "role": "user",
+  "content": "Hello?",
+  "metadata": {},
+  "created_at": "2026-05-12T10:30:05+00:00",
+  "edited_at": null
+}
+```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `Invalid conversation_id or message_id` |
+| `404` | `Message not found` |
+| `503` | `Database unavailable` |
+
+---
+
+## Database Schema
+
+```sql
+conversations (
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  type       TEXT NOT NULL CHECK (type IN ('phone', 'chat')),
+  user_uuid  UUID NOT NULL REFERENCES users(uuid) ON DELETE CASCADE,
+  title      TEXT,
+  metadata   JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)
+
+messages (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  conversation_id UUID NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+  role            TEXT NOT NULL CHECK (role IN ('system', 'user', 'assistant')),
+  content         TEXT NOT NULL,
+  metadata        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  edited_at       TIMESTAMPTZ
+)
+```
