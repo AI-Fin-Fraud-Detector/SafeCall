@@ -43,7 +43,6 @@ class EdgeClient:
         self.loop = None
         # Gates whether mic audio is forwarded; set on incoming_call, cleared on call_end
         self.mic_active = False
-        self._mic_error_event = asyncio.Event()
 
     # ─── Connection ──────────────────────────────────────────────────────────
 
@@ -74,8 +73,6 @@ class EdgeClient:
     def audio_callback(self, indata, frames, time, status):
         if status:
             print(f"\n[Mic Status] {status}", flush=True)
-            if self.loop and status.input_error:
-                self.loop.call_soon_threadsafe(self._mic_error_event.set)
             return
 
         if not self.mic_active:
@@ -248,39 +245,6 @@ class EdgeClient:
                 self.output_stream.close()
                 self.output_stream = None
 
-    # ─── Mic stream ──────────────────────────────────────────────────────────
-
-    def _open_mic_stream(self):
-        stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=DTYPE,
-            callback=self.audio_callback,
-            blocksize=CHUNK_SIZE,
-        )
-        stream.start()
-        return stream
-
-    async def _mic_watchdog(self):
-        while self.running:
-            await self._mic_error_event.wait()
-            if not self.running:
-                break
-            self._mic_error_event.clear()
-            print("\n[Mic] Device error — restarting stream...", flush=True)
-            if self.mic_stream:
-                try:
-                    self.mic_stream.stop()
-                    self.mic_stream.close()
-                except Exception:
-                    pass
-            await asyncio.sleep(1)
-            try:
-                self.mic_stream = await asyncio.to_thread(self._open_mic_stream)
-                print("\n[Mic] Stream restarted.", flush=True)
-            except Exception as e:
-                print(f"\n[Mic] Restart failed: {e}", flush=True)
-
     # ─── Entry point ─────────────────────────────────────────────────────────
 
     async def run(self):
@@ -289,8 +253,14 @@ class EdgeClient:
         self.load_vad()
 
         print("Starting microphone stream (waiting for incoming call)...", flush=True)
-        self.mic_stream = await asyncio.to_thread(self._open_mic_stream)
-        watchdog_task = asyncio.create_task(self._mic_watchdog())
+        self.mic_stream = sd.InputStream(
+            samplerate=SAMPLE_RATE,
+            channels=CHANNELS,
+            dtype=DTYPE,
+            callback=self.audio_callback,
+            blocksize=CHUNK_SIZE
+        )
+        self.mic_stream.start()
 
         try:
             metadata = [("authorization", EDGE_TOKEN)]
@@ -300,8 +270,6 @@ class EdgeClient:
             print(f"\n[Session Error] {e}", flush=True)
         finally:
             self.running = False
-            self._mic_error_event.set()  # unblock watchdog so it can exit
-            watchdog_task.cancel()
             if self.mic_stream:
                 self.mic_stream.stop()
                 self.mic_stream.close()
