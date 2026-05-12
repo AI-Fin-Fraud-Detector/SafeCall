@@ -1,0 +1,16 @@
+[project]
+name = "edge"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "dotenv>=0.9.9",
+    "grpcio>=1.80.0",
+    "grpcio-tools>=1.80.0",
+    "numpy>=2.4.4",
+    "onnxruntime>=1.25.1",
+    "silero-vad>=6.2.1",
+    "sounddevice>=0.5.5",
+    "torch>=2.11.0",
+]

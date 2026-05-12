@@ -100,9 +100,9 @@ async def process_push_stream():
                     event = dict(fields)
 
                     payload_json = event.get("payload")
-                    callee_user_id = event.get("callee_user_id")
+                    target_user_id = event.get("target_user_id")
 
-                    if payload_json and callee_user_id:
+                    if payload_json and target_user_id:
                         try:
                             # Deserialize payload back to Python dict
                             payload = json.loads(payload_json)
@@ -115,18 +115,18 @@ async def process_push_stream():
                         try:
                             app = event.get("app")
                             sent, failed = await send_push_to_user(
-                                callee_user_id, payload, app=app
+                                target_user_id, payload, app=app
                             )
                             print(
-                                f"[Stream] Notification sent to {callee_user_id}: {sent} sent, {failed} failed"
+                                f"[Stream] Notification sent to {target_user_id}: {sent} sent, {failed} failed"
                             )
                         except Exception as e:
                             print(
-                                f"[Stream] Failed sending push to {callee_user_id}: {e}"
+                                f"[Stream] Failed sending push to {target_user_id}: {e}"
                             )
                     else:
                         print(
-                            f"[Stream] Invalid event, missing payload or callee_user_id: {event}"
+                            f"[Stream] Invalid event, missing payload or target_user_id: {event}"
                         )
 
         except asyncio.CancelledError:
@@ -139,7 +139,6 @@ async def process_push_stream():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global llm, tts_service
     await database.connect_to_db()
     # Check if the redis_client was successfully initialized before using it.
     if database.redis_client:

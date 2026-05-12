@@ -104,12 +104,19 @@ def get_password_hash(password):
     return pwd_context.hash(password)
 
 
-async def create_token(conn: asyncpg.Connection, user_uuid: uuid.UUID) -> str:
+async def create_token(
+    conn: asyncpg.Connection,
+    user_uuid: uuid.UUID,
+    user_agent: Optional[str],
+    ip_address: Optional[str],
+) -> str:
     token = secrets.token_urlsafe(32)
     await conn.execute(
-        "INSERT INTO tokens (user_uuid, token) VALUES ($1, $2)",
+        "INSERT INTO tokens (user_uuid, token, user_agent, ip_address) VALUES ($1, $2, $3, $4)",
         user_uuid,
         token,
+        user_agent,
+        ip_address,
     )
     return token
 
@@ -124,21 +131,11 @@ async def get_user_by_email_from_db(
     return UserInDB(**row) if row else None
 
 
-async def get_user_by_uuid_from_db(
-    conn: asyncpg.Connection, user_uuid: uuid.UUID
-) -> Optional[UserInDB]:
-    row = await conn.fetchrow(
-        "SELECT uuid, email, phone_number, name, hashed_password FROM users WHERE uuid = $1",
-        user_uuid,
-    )
-    return UserInDB(**row) if row else None
-
-
 # --- Dependency for User Authentication ---
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
     conn: asyncpg.Connection = Depends(get_db_connection),
-):
+) -> UserInDB:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -146,19 +143,18 @@ async def get_current_user(
     )
     row = await conn.fetchrow(
         """
-        SELECT user_uuid FROM tokens
-        WHERE token = $1 AND revoked_at IS NULL
-          AND (expires_at IS NULL OR expires_at > NOW())
+        SELECT u.uuid, u.email, u.phone_number, u.name, u.hashed_password
+        FROM tokens t
+        JOIN users u ON u.uuid = t.user_uuid
+        WHERE t.token = $1
+          AND t.revoked_at IS NULL
+          AND (t.expires_at IS NULL OR t.expires_at > NOW());
         """,
         token,
     )
     if not row:
         raise credentials_exception
-
-    user = await get_user_by_uuid_from_db(conn, row["user_uuid"])
-    if user is None:
-        raise credentials_exception
-    return user
+    return UserInDB(**row)
 
 
 # --- API Endpoints ---
@@ -166,6 +162,7 @@ async def get_current_user(
 
 @app.post("/api/auth/login", response_model=Token)
 async def login_for_access_token(
+    request: Request,
     body: LoginRequest,
     conn: asyncpg.Connection = Depends(get_db_connection),
 ):
@@ -176,7 +173,9 @@ async def login_for_access_token(
             detail="Incorrect email or password",
         )
 
-    token = await create_token(conn, user.uuid)
+    user_agent = request.headers.get("User-Agent")
+    ip_address = request.headers.get("X-Real-IP") or request.headers.get("X-Forwarded-For")
+    token = await create_token(conn, user.uuid, user_agent, ip_address)
     return {"access_token": token}
 
 
@@ -258,6 +257,21 @@ async def register_user(
         raise HTTPException(
             status_code=500, detail="An unexpected error occurred during registration."
         )
+
+
+@app.delete("/api/auth/user/{user_uuid}")
+async def delete_user(
+    user_uuid: uuid.UUID,
+    current_user: UserInDB = Depends(get_current_user),
+    conn: asyncpg.Connection = Depends(get_db_connection),
+):
+    if str(current_user.uuid) != str(user_uuid):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this account.",
+        )
+    await conn.execute("DELETE FROM users WHERE uuid = $1", user_uuid)
+    return {"message": "User account deleted successfully."}
 
 
 @app.get("/api/auth/status", response_model=User)

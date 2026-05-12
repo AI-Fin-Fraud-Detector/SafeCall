@@ -7,8 +7,6 @@ services:
         - NONROOT_USERNAME=ubuntu
         - PROJECT_PATH=/project/auth
     restart: on-failure
-    # ports:
-    #   - "8000"
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
@@ -22,13 +20,10 @@ services:
   db:
     image: postgres:18-alpine
     restart: on-failure
-    # ports:
-    #   - "5432"
     environment:
       POSTGRES_USER: ${DB_USERNAME}
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_DATABASE_NAME}
-      # PGDATA: /var/lib/postgresql/18/docker
     volumes:
       - pg_data:/var/lib/postgresql/18/docker
       - ./db/:/docker-entrypoint-initdb.d/
@@ -49,19 +44,15 @@ services:
         - HF_TOKEN
         - GIT_AUTH_TOKEN
     restart: on-failure
-    # ports:
-    #   - "8000"
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE_NAME: ${DB_DATABASE_NAME}
-      # TTS Service Configuration
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       TTS_MODEL: ${TTS_MODEL:-gpt-4o-mini-tts}
       VOICE_MODEL: ${VOICE_MODEL:-alloy}
-      # Food Recognition Service Configuration  
       FOOD_API_URL: ${FOOD_API_URL}
     deploy:
       resources:
@@ -72,6 +63,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    command: ["python", "-m", "http.server", "8000"]
   fraud:
     build:
       context: fraud
@@ -80,21 +72,21 @@ services:
         - NONROOT_USERNAME=ubuntu
         - PROJECT_PATH=/project/fraud
     restart: on-failure
-    # ports:
-    #   - "8000"
+    ports:
+      - "60015:60015"
     environment:
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       DB_USERNAME: ${DB_USERNAME}
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE_NAME: ${DB_DATABASE_NAME}
-      # Anti-Fraud Service Configuration
       FRAUD_DETECTION_API_URL: ${FRAUD_DETECTION_API_URL}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      # TTS Service Configuration
       TTS_MODEL: ${TTS_MODEL:-tts-1}
       VOICE_MODEL: ${VOICE_MODEL:-alloy}
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       db:
         condition: service_healthy
@@ -102,6 +94,13 @@ services:
         condition: service_started
       redis:
         condition: service_started
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['1']
+              capabilities: [gpu]
   food_detect:
     build:
       context: ./food_detect
@@ -112,15 +111,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-  #   # Add other configurations as needed
-  # tts:
-  #   build:
-  #     context: ./tts
-  #     dockerfile: Dockerfile
-  #     args:
-  #       - NONROOT_USERNAME=ubuntu
-  #       - PROJECT_PATH=/project/tts
-  #   # Add other configurations as needed
   push_notification:
     build:
       context: ./push_notification
@@ -128,8 +118,6 @@ services:
       args:
         - NONROOT_USERNAME=ubuntu
         - PROJECT_PATH=/project/push_notification
-    # ports:
-    #   - "8000"
     restart: on-failure
     environment:
       DB_HOST: ${DB_HOST}
@@ -149,8 +137,6 @@ services:
   redis:
     image: redis:8-alpine
     restart: on-failure
-    # ports:
-    #   - "6379"
   nginx:
     image: nginx:stable-alpine
     restart: on-failure
