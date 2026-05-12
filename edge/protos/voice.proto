@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+import "google/protobuf/struct.proto";
+
+service VoiceService {
+  // Bidirectional stream: Client sends audio/interrupts, Server sends audio/transcripts
+  rpc Session(stream ClientMessage) returns (stream ServerMessage);
+}
+
+message ClientMessage {
+  oneof payload {
+    bytes audio_chunk = 1; // Raw 16kHz Mono Int16 PCM
+    bool interrupt = 2;    // Signal to stop AI generation/playback
+  }
+}
+
+message ServerMessage {
+  oneof payload {
+    bytes audio_response = 1;          // Raw PCM audio (16kHz Mono Int16)
+    google.protobuf.Struct text_status = 2; // JSON status payload
+  }
+}

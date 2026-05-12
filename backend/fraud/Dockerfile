@@ -1,4 +1,4 @@
-ARG BASE_IMAGE=ubuntu:24.04
+ARG BASE_IMAGE=nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 FROM $BASE_IMAGE AS python-base
 ARG PROJECT_PATH
@@ -25,7 +25,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     apt update \
     && apt install -y --no-install-recommends \
-        ca-certificates
+        ca-certificates \
+        python3-dev \
+        portaudio19-dev
 
 ################################################################################
 
@@ -109,10 +111,60 @@ ARG NONROOT_USERNAME
 
 WORKDIR ${PROJECT_PATH}
 
-COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare /home/${NONROOT_USERNAME}/.local/share/uv/python /home/${NONROOT_USERNAME}/.local/share/uv/python
+COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare /home/${NONROOT_USERNAME}/.local/share/uv/python /home/${NONROOT_USERNAME}/.local/share/uv/python`
 COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare ${VENV_PATH} ${VENV_PATH}
 
+USER ${NONROOT_USERNAME}
+
+ARG WHISPER_MODEL
+RUN PYTHONDONTWRITEBYTECODE=1 python - << 'EOF'
+import os
+import torch
+import sys
+import types
+
+sys.modules["pvporcupine"] = types.ModuleType("pvporcupine")
+torch.hub._check_repo_is_trusted = lambda *args, **kwargs: True
+
+from RealtimeSTT import AudioToTextRecorder
+
+whisper_model=os.getenv("WHISPER_MODEL", "tiny")
+recorder_config = {
+    "spinner": False,
+    "use_microphone": False,
+    "model": whisper_model,
+    # "language": "en",
+    "silero_sensitivity": 0.4,
+    "webrtc_sensitivity": 2,
+    "post_speech_silence_duration": 0.25,
+    "min_length_of_recording": 0,
+    "min_gap_between_recordings": 0,
+    # "enable_realtime_transcription": True,
+    "realtime_processing_pause": 0,
+    "realtime_model_type": "base",
+    # "on_realtime_transcription_stabilized": _on_realtime,
+    "no_log_file": True,
+}
+
+# Initialize recorder
+try:
+    recorder: AudioToTextRecorder = AudioToTextRecorder(**recorder_config)
+    print(f"Successfully initalized AudioToTextRecorder ({whisper_model})")
+    recorder.stop()
+    recorder.shutdown()
+except Exception as e:
+    raise RuntimeError(f"Failed to initialize AudioToTextRecorder: {e}")
+EOF
+
+
 COPY --exclude=.devcontainer/ --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} . .
+
+# Generate gRPC stubs from the proto definition
+RUN PYTHONDONTWRITEBYTECODE=1 python -m grpc_tools.protoc \
+    -I protos \
+    --python_out=src \
+    --grpc_python_out=src \
+    protos/voice.proto
 
 # RUN useradd -ms /bin/bash ${NONROOT_USERNAME} --user-group
 USER ${NONROOT_USERNAME}

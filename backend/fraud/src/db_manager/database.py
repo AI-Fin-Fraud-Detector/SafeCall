@@ -140,6 +140,21 @@ async def add_message(conversation_id: str, role: str, content: str) -> str:
         return str(message_id)
 
 
+async def is_fraud_detection_enabled(user_uuid: str) -> bool:
+    """Checks if fraud detection is enabled for a given user."""
+    if pool is None:
+        raise Exception("Database connection pool is not initialized.")
+    async with pool.acquire() as conn:
+        result = await conn.fetchval(
+            """
+            SELECT scam_detection FROM users
+            WHERE uuid = $1;
+            """,
+            uuid.UUID(user_uuid),
+        )
+        return result
+
+
 async def set_call_token(caller_id: str, callee_id: str, expiration_seconds: int = 60):
     """Sets a call token for a user in Redis with an expiration time."""
     if redis_client is None:

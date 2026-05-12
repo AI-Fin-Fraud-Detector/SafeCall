@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS messages (
     content TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    edited_at TIMESTAMPTZ,
+    edited_at TIMESTAMPTZ
 );
 
 CREATE INDEX IF NOT EXISTS idx_conversations_user_updated

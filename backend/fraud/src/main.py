@@ -1,250 +1,104 @@
 import asyncio
 import json
-import math
 import os
-import urllib.parse
+import sys
+import uuid
+from concurrent import futures
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Optional
 
+import grpc
 import httpx
-from fastapi import FastAPI, Header, HTTPException, Query
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
 from pydantic import BaseModel
 
-# Import the database module itself to access its global variables correctly.
-from .db_manager import database, get_user_latest_conversation
+# voice_pb2_grpc uses a flat `import voice_pb2`; add src/ to sys.path so it resolves
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import voice_pb2_grpc
+
+from .db_manager import database
+from .voice_session import _Session
+
+FRAUD_DETECTION_API_URL = os.getenv("FRAUD_DETECTION_API_URL", "")
+
+# Global registry: user_uuid → active _Session
+active_sessions: dict[str, _Session] = {}
+sessions_lock = asyncio.Lock()
+
+_grpc_server: grpc.aio.Server | None = None
 
 
-class IncomingCallRequest(BaseModel):
-    phone_number: str
+# ─── Auth ─────────────────────────────────────────────────────────────────────
 
-class FraudMessage(BaseModel):
-    prompt: str
-    phone_number: str  # 受話者的手機號碼
-    initiate_conversation: Optional[bool] = False
-
-
-class NotificationPayload(BaseModel):
-    title: str | None = None
-    body: str | None = None
-    icon: str | None = None
-    tag: str | None = None
-    data: dict | None = None
-    silent: bool = False
-    android_priority: str | None = None
-
-
-async def get_user_by_phone(phone_number: str) -> Optional[dict]:
-    """
-    透過手機號碼查詢用戶資訊
-
-    Args:
-        phone_number: 手機號碼
-
-    Returns:
-        dict: 用戶資訊 (包含 name, email 等)，如果找不到則返回 None
-    """
-    try:
-        if database.pool:
-            async with database.pool.acquire() as conn:
-                query = """
-                    SELECT uuid, name, email, phone_number
-                    FROM users
-                    WHERE phone_number = $1
-                """
-                result = await conn.fetchrow(query, phone_number)
-                if result:
-                    return {
-                        "uuid": str(result["uuid"]),
-                        "name": result["name"],
-                        "email": result["email"],
-                        "phone_number": result["phone_number"],
-                    }
+async def validate_token(token: str) -> Optional[str]:
+    """Returns user_uuid string if the token is valid, else None."""
+    if not database.pool:
         return None
-    except Exception as e:
-        print(f"[ERROR] Failed to query user by phone {phone_number}: {e}")
-        return None
-
-
-async def format_conversation_for_detection(conversation_id: str) -> str:
-    """
-    格式化對話歷史為詐騙檢測API所需的格式
-    格式: caller:...receiver:...caller:...receiver:...
-    注意：只包含user和assistant的對話內容，不包含system prompt
-
-    Args:
-        conversation_id: 對話ID
-
-    Returns:
-        str: 格式化後的對話文本
-    """
-    try:
-        if database.pool:
-            async with database.pool.acquire() as conn:
-                query = """
-                    SELECT role, content, created_at
-                    FROM messages
-                    WHERE conversation_id = $1
-                    AND role IN ('user', 'assistant')
-                    ORDER BY created_at ASC
-                """
-                messages = await conn.fetch(query, conversation_id)
-
-                formatted_parts = []
-                for msg in messages:
-                    role = msg["role"]
-                    content = msg["content"].strip()
-
-                    # user對應caller, assistant對應receiver
-                    if role == "user":
-                        formatted_parts.append(f"caller: {content}")
-                    elif role == "assistant":
-                        formatted_parts.append(f"receiver: {content}")
-
-                formatted_text = " ".join(formatted_parts)
-                print(
-                    f"[DEBUG] Formatted conversation for detection ({len(messages)} messages): {formatted_text[:200]}..."
-                )
-                return formatted_text
-        return ""
-    except Exception as e:
-        print(f"[ERROR] Failed to format conversation {conversation_id}: {e}")
-        return ""
-
-
-async def call_fraud_detection_api(conversation_text: str) -> bool | None:
-    """
-    調用詐騙檢測API
-
-    Args:
-        conversation_text: 格式化後的對話文本
-
-    Returns:
-        bool: True表示可能是詐騙，False表示正常對話，None表示API調用失敗
-    """
-    try:
-        print(
-            f"[DEBUG] Calling fraud detection API with text length: {len(conversation_text)}"
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            """
+            SELECT user_uuid FROM tokens
+            WHERE token = $1 AND revoked_at IS NULL
+              AND (expires_at IS NULL OR expires_at > NOW())
+            """,
+            token,
         )
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.post(
-                FRAUD_DETECTION_API_URL,
-                json={"text": conversation_text},
-                headers={"Content-Type": "application/json"},
-            )
+        return str(row["user_uuid"]) if row else None
 
-            print(f"[DEBUG] Fraud detection API status: {response.status_code}")
-            print(
-                f"[DEBUG] Response content type: {response.headers.get('content-type')}"
-            )
-            print(f"[DEBUG] Raw response: {response.text}")
 
-            if response.status_code == 200:
-                # API返回純文本 "True" 或 "False"
-                response_text = response.text.strip()
+# ─── gRPC servicer ────────────────────────────────────────────────────────────
 
-                if response_text.lower() == "true":
-                    prediction = True
-                    print("[INFO] Fraud detection result: True (possible scam)")
-                elif response_text.lower() == "false":
-                    prediction = False
-                    print("[INFO] Fraud detection result: False (normal conversation)")
-                else:
-                    # 如果返回其他內容，嘗試解析JSON
-                    try:
-                        result = response.json()
-                        print(f"[DEBUG] Parsed JSON response: {result}")
-                        prediction = result.get(
-                            "prediction", result.get("result", None)
-                        )
-                        print(f"[INFO] Fraud detection result: {prediction}")
-                    except json.JSONDecodeError:
-                        print(f"[ERROR] Unexpected response format: {response_text}")
-                        return None
+class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
+    async def Session(self, request_iterator, context):
+        metadata = dict(context.invocation_metadata())
+        token = metadata.get("authorization", "")
+        user_uuid = await validate_token(token)
+        if not user_uuid:
+            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired token")
+            return
 
-                return prediction
-            else:
-                print(
-                    f"[WARNING] Fraud detection API returned status {response.status_code}"
-                )
-                print(f"[WARNING] Response body: {response.text}")
-                return None
-    except httpx.TimeoutException as e:
-        print(f"[ERROR] Fraud detection API timeout: {e}")
-        return None
-    except httpx.RequestError as e:
-        print(f"[ERROR] Fraud detection API request error: {e}")
-        return None
-    except Exception as e:
-        print(f"[ERROR] Failed to call fraud detection API: {e}")
-        return None
+        print(f"[gRPC] Session authenticated: user={user_uuid}", flush=True)
+        session = _Session(user_uuid, database.pool, database.redis_client)
 
+        async with sessions_lock:
+            active_sessions[user_uuid] = session
+        try:
+            async for response in session.run(request_iterator, context):
+                yield response
+        finally:
+            async with sessions_lock:
+                active_sessions.pop(user_uuid, None)
+            print(f"[gRPC] Session closed: user={user_uuid}", flush=True)
+
+
+# ─── FastAPI lifespan ─────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global llm, tts_service
+    global _grpc_server
     await database.connect_to_db()
-    # Check if the redis_client was successfully initialized before using it.
     if database.redis_client:
-        await database.redis_client.ping()  # Establishes connection and checks health
-    else:
-        raise RuntimeError(
-            "Redis client could not be initialized. Application cannot start."
-        )
+        await database.redis_client.ping()
+
+    _grpc_server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
+    voice_pb2_grpc.add_VoiceServiceServicer_to_server(VoiceServiceServicer(), _grpc_server)
+    _grpc_server.add_insecure_port("[::]:60015")
+    await _grpc_server.start()
+    print("[gRPC] Server listening on [::]:60015", flush=True)
 
     yield
+
+    await _grpc_server.stop(grace=5)
     await database.close_db_connection()
     await database.close_redis_connection()
 
 
-async def notify_callee_event(
-    caller_user_id: str,
-    caller_name: str,
-    callee_user_id: str,
-    conversation_id: str,
-    call_token: str,
-):
-    """Publishes events to Redis for other services to consume."""
-    # Event for the socket gateway to broadcast the text message
-    notification_payload = NotificationPayload(
-        title="來電通知",
-        body=f"偵測到來自 {caller_name} 的來電",
-        data={
-            "type": "incoming_call",
-            "call_token": call_token,
-            "caller_name": caller_name,
-            "caller_user_id": caller_user_id,
-        },
-        silent=False, # TODO in the future change to callstylenotification
-        android_priority="high",
-    )
-    gateway_event = {
-        "type": "call_notify",
-        "service": "anti-fraud",
-        "caller_user_id": caller_user_id,
-        "callee_user_id": callee_user_id,
-        "conversation_id": conversation_id,
-        "payload": json.dumps(notification_payload.model_dump()),
-        "app": "kebbi",
-    }
-    # Ensure the client is available before publishing
-    if database.redis_client:
-        # XADD adds events to a stream. The '*' generates a unique ID.
-        await database.redis_client.xadd("push_notification_stream", gateway_event)
-        print(
-            f"[Anti-Fraud Service] Added call_notify to push_notification_stream for caller {caller_user_id} > callee {callee_user_id}"
-        )
-    else:
-        print(
-            "[Anti-Fraud Service] ERROR: Redis client not available. Cannot publish events."
-        )
-
+# ─── FastAPI app ──────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="Anti-Fraud Communication Service",
-    description="A GPT-powered service designed to engage with scammers and extract information about their schemes",
+    description="GPT-powered service that answers calls on behalf of users via edge devices",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -257,6 +111,86 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+# ─── Pydantic models ──────────────────────────────────────────────────────────
+
+class IncomingCallRequest(BaseModel):
+    phone_number: str
+
+
+class CallEventRequest(BaseModel):
+    callee_user_id: str
+
+
+class NotificationPayload(BaseModel):
+    title: str | None = None
+    body: str | None = None
+    data: dict | None = None
+    silent: bool = False
+    android_priority: str | None = None
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+async def send_push(
+    target_user_id: str,
+    payload: NotificationPayload,
+    app: str | None = None,
+):
+    event = {
+        "target_user_id": target_user_id,
+        "payload": json.dumps(payload.model_dump()),
+        "app": app,
+    }
+    if database.redis_client:
+        await database.redis_client.xadd("push_notification_stream", event)
+
+async def format_conversation_for_detection(conversation_id: str) -> str:
+    try:
+        if database.pool:
+            async with database.pool.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT role, content FROM messages
+                    WHERE conversation_id = $1 AND role IN ('user', 'assistant')
+                    ORDER BY created_at ASC
+                    """,
+                    uuid.UUID(conversation_id),
+                )
+                parts = []
+                for row in rows:
+                    label = "caller" if row["role"] == "user" else "receiver"
+                    parts.append(f"{label}: {row['content'].strip()}")
+                return " ".join(parts)
+    except Exception as e:
+        print(f"[ERROR] format_conversation: {e}", flush=True)
+    return ""
+
+
+async def call_fraud_detection_api(conversation_text: str) -> Optional[bool]:
+    if not FRAUD_DETECTION_API_URL or not conversation_text:
+        return None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                FRAUD_DETECTION_API_URL,
+                json={"text": conversation_text},
+                headers={"Content-Type": "application/json"},
+            )
+            if resp.status_code == 200:
+                text = resp.text.strip().lower()
+                if text == "true":
+                    return True
+                if text == "false":
+                    return False
+    except Exception as e:
+        print(f"[ERROR] fraud_detection_api: {e}", flush=True)
+    return None
+
+
+# ─── Endpoints ────────────────────────────────────────────────────────────────
+
 @app.post("/api/fraud/incoming-call")
 async def incoming_call(
     body: IncomingCallRequest,
@@ -264,44 +198,127 @@ async def incoming_call(
     x_email: str | None = Header(None, alias="X-Email"),
     x_installation_id: str | None = Header("", alias="X-Installation-Id"),
 ):
-    print(
-        f"Received incoming call: {body.phone_number} ({x_email} - {x_user_id})"
+    print(f"[HTTP] incoming_call: caller={body.phone_number}, callee={x_user_id}", flush=True)
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+
+    conversation_id = await database.create_conversation(x_user_id)
+    caller_phone_number = body.phone_number
+    
+    is_fraud_detection_enabled = await database.is_fraud_detection_enabled(x_user_id)
+
+    if is_fraud_detection_enabled:
+        async with sessions_lock:
+            session = active_sessions.get(x_user_id)
+        if session:
+            await session.on_incoming_call(conversation_id, body.phone_number)
+        else:
+            print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
+
+        await send_push(
+            target_user_id=x_user_id,
+            payload=NotificationPayload(
+                title="Incoming Call",
+                body=f"Call from {caller_phone_number}",
+                data={
+                    "type": "incoming_call",
+                    "detail": {
+                        "phone_number": caller_phone_number,
+                    }
+                },
+                silent=False,
+            ),
+            app="kebbi"
+        )
+
+        return {"status": "ok", "fraud_detection": "enabled"}
+    
+    else:
+        call_token = await database.set_call_token(caller_phone_number, x_user_id)
+        async with sessions_lock:
+            session = active_sessions.get(x_user_id)
+        if session:
+            await session.on_direct_call(conversation_id, body.phone_number)
+        else:
+            print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
+
+        await send_push(
+            target_user_id=x_user_id,
+            payload=NotificationPayload(
+                title="Incoming Call",
+                body=f"Call from {caller_phone_number}",
+                data={
+                    "type": "incoming_call",
+                    "detail": {
+                        "phone_number": caller_phone_number,
+                    }
+                },
+                silent=True,
+                android_priority="high",
+            ),
+            app="kebbi"
+        )
+        return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
+
+
+@app.post("/api/fraud/direct-call")
+async def direct_call(
+    body: CallEventRequest,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Callee manually answered the call; edge should stop handling it."""
+    async with sessions_lock:
+        session = active_sessions.get(body.callee_user_id)
+    if session:
+        await session.on_call_end("direct_call")
+    return {"status": "ok"}
+
+
+@app.post("/api/fraud/call-end")
+async def call_end(
+    body: CallEventRequest,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Call has ended; edge should stop."""
+    async with sessions_lock:
+        session = active_sessions.get(body.callee_user_id)
+    if session:
+        await session.on_call_end("call_end")
+    send_push(
+        target_user_id=x_user_id,
+        payload=NotificationPayload(
+            data={
+                "type": "call_event",
+                "action": "hangup"
+            },
+            silent=True,
+            android_priority="high",
+        ),
+        app="host_mobile"
     )
-    return
+    return {"status": "ok"}
 
 
 @app.get("/health")
 async def health_check():
-    """
-    Health Check Endpoint
-
-    Returns the health status of the anti-fraud service and its components.
-    """
-    try:
-        # 檢查Redis連接
-        if database.redis_client:
+    redis_ok = False
+    if database.redis_client:
+        try:
             await database.redis_client.ping()
-            redis_status = "healthy"
-        else:
-            redis_status = "disconnected"
-
-        # 檢查LLM狀態
-        llm_status = "healthy" if llm else "not_initialized"
-
-        return {
-            "status": "healthy",
-            "service": "anti-fraud",
-            "components": {
-                "redis": redis_status,
-                # "llm": llm_status,
-                # "tts": "healthy" if tts_service else "not_initialized",
-            },
-        }
-    except Exception as e:
-        return {"status": "unhealthy", "error": str(e)}
+            redis_ok = True
+        except Exception:
+            pass
+    return {
+        "status": "healthy",
+        "service": "anti-fraud",
+        "components": {
+            "redis": "healthy" if redis_ok else "disconnected",
+            "grpc": "listening on :60015",
+            "active_sessions": len(active_sessions),
+        },
+    }
 
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="0.0.0.0", port=8000)
