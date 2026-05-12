@@ -134,6 +134,7 @@ class _Session:
                     yield response
                 except asyncio.TimeoutError:
                     if read_task.done():
+                        print(f"[CONN] Request handler finished, closing session: user={self.user_uuid}", flush=True)
                         break
         except Exception as e:
             print(f"[SESSION] Error: {e}", flush=True)
@@ -141,25 +142,34 @@ class _Session:
             read_task.cancel()
             self._cancel_current_task()
             await self._cleanup()
+            print(f"[CONN] Session closed: user={self.user_uuid}\n", flush=True)
 
     async def _handle_requests(self, request_iterator):
         stt_task = None
         try:
+            print("[DEBUG] Entering request handler loop...", flush=True)
             if self.recorder:
                 stt_task = asyncio.create_task(self._stt_reader_loop())
             async for message in request_iterator:
                 if message.HasField("interrupt"):
+                    print("\n[INTERRUPT] Received from edge (VAD)", flush=True)
                     self.interrupt_event.set()
                     self.is_prompting = False
                     self.is_generating_tts = False
                     self._cancel_current_task()
                     await self._drain_queue()
                     if self.audio_sent:
+                        print("[INTERRUPT] audio_sent=True → fresh start", flush=True)
                         self.pending_prompt = None
                         self.audio_sent = False
+                    else:
+                        print("[INTERRUPT] audio_sent=False → append mode", flush=True)
                 elif message.HasField("audio_chunk"):
                     if self.call_active.is_set() and self.recorder:
                         await asyncio.to_thread(self.recorder.feed_audio, message.audio_chunk)
+                else:
+                    payload_type = message.WhichOneof("payload")
+                    print(f"\n[WARN] Unknown payload: {payload_type}", flush=True)
         except Exception as e:
             print(f"[SESSION] Request handler error: {e}", flush=True)
         finally:
@@ -170,6 +180,7 @@ class _Session:
 
     def _initialize_stt(self):
         try:
+            print("[STT] Initializing RealtimeSTT engine...", flush=True)
             from RealtimeSTT import AudioToTextRecorder
             self.recorder = AudioToTextRecorder(
                 use_microphone=False,
@@ -183,8 +194,9 @@ class _Session:
                 init_realtime_after_seconds=0.09,
                 no_log_file=True,
             )
+            print("[STT] RealtimeSTT initialized successfully", flush=True)
             self.recorder.feed_audio(b"\x00" * 1024)
-            print("[STT] Initialized successfully", flush=True)
+            print("[STT] RealtimeSTT warmed up", flush=True)
         except Exception as e:
             print(f"[STT] Init failed: {e}", flush=True)
             self.recorder = None
@@ -193,11 +205,13 @@ class _Session:
         if not text or not text.strip():
             return
         if (self.is_prompting or self.is_generating_tts) and self.loop:
+            print(f"\n[REALTIME] Speech detected during generation: '{text}'", flush=True)
             asyncio.run_coroutine_threadsafe(self._cancel_on_realtime(), self.loop)
 
     async def _cancel_on_realtime(self):
         if not (self.is_prompting or self.is_generating_tts):
             return
+        print("\n[REALTIME] Cancelling generation", flush=True)
         self.interrupt_event.set()
         self.is_prompting = False
         self.is_generating_tts = False
@@ -217,10 +231,11 @@ class _Session:
                     if not text.strip():
                         continue
                     text = self.pending_prompt + " " + text
+                    print(f"\n[STT] Appended → '{text}'", flush=True)
                 else:
                     if not text.strip():
                         continue
-                    print(f"[STT] user={self.user_uuid}: '{text}'", flush=True)
+                    print(f"\n[STT] Transcribed: '{text}'", flush=True)
                 self.pending_prompt = text
                 self.audio_sent = False
                 await self.response_queue.put(
@@ -263,6 +278,7 @@ class _Session:
             await self._stream_tts(client, response_text)
 
         except asyncio.CancelledError:
+            print("[DEBUG] AI task cancelled", flush=True)
             raise
         except Exception as e:
             print(f"[LLM/TTS] Error: {e}", flush=True)
@@ -301,6 +317,8 @@ class _Session:
 
     async def _call_llm(self, client) -> str:
         llm_messages = [{"role": m["role"], "content": m["content"]} for m in self.messages]
+        last_user = next((m["content"] for m in reversed(llm_messages) if m["role"] == "user"), "")
+        print(f"[LLM] Prompting: {last_user[:60]}{'...' if len(last_user) > 60 else ''}", flush=True)
         llm_resp = await client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=llm_messages,
@@ -311,11 +329,13 @@ class _Session:
             presence_penalty=0.1,  # 鼓勵新內容
         )
         response_text = llm_resp.choices[0].message.content
+        print(f"[LLM] Response: {response_text}", flush=True)
         asst_id = await self._save_message("assistant", response_text)
         self.messages.append({"id": asst_id, "role": "assistant", "content": response_text})
         return response_text
 
     async def _stream_tts(self, client, response_text: str):
+        print("[TTS] Generating audio...", flush=True)
         tts_resp = await client.audio.speech.create(
             model=TTS_MODEL,
             voice=VOICE_MODEL,
@@ -329,10 +349,12 @@ class _Session:
         audio_24k = np.frombuffer(tts_resp.content, dtype=np.int16).astype(np.float32) / 32767.0
         audio_16k = self._resample(audio_24k, 24000, 16000)
         audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
+        print(f"[TTS] Streaming {len(audio_bytes)} bytes...", flush=True)
 
         chunk_size = 1024
         for i in range(0, len(audio_bytes), chunk_size):
             if self.interrupt_event.is_set():
+                print("[TTS] Interrupted during streaming", flush=True)
                 return
             if not self.audio_sent:
                 self.audio_sent = True
@@ -348,6 +370,7 @@ class _Session:
 
     def _cancel_current_task(self):
         if self.current_task and not self.current_task.done():
+            print("[DEBUG] Cancelling current AI task", flush=True)
             self.current_task.cancel()
             self.current_task = None
 
