@@ -17,7 +17,7 @@ async def send_push(
 ):
     event = {
         "target_user_id": target_user_id,
-        "payload": json.dumps(payload.model_dump()),
+        "payload": json.dumps(payload.model_dump(mode='json')),
         "app": app,
     }
     if database.redis_client:
