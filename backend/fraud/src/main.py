@@ -285,7 +285,7 @@ async def call_end(
         session = active_sessions.get(body.callee_user_id)
     if session:
         await session.on_call_end("call_end")
-    send_push(
+    await send_push(
         target_user_id=x_user_id,
         payload=NotificationPayload(
             data={
