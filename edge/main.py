@@ -209,7 +209,7 @@ class EdgeClient:
 
                     if event_type == "incoming_call":
                         caller_phone = status.get("caller_phone", "Unknown")
-                        print(f"\n[CALL] Incoming call from {caller_phone} — starting mic", flush=True)
+                        print(f"\n[CALL] Incoming call from {caller_phone} — starting mic {status.get('metadata', '')}", flush=True)
                         self.mic_active = True
 
                     elif event_type == "call_end":

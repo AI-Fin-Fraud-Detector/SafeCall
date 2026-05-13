@@ -77,7 +77,7 @@ class _Session:
         self.call_active.set()
         await self.response_queue.put(
             voice_pb2.ServerMessage(
-                text_status=make_status("incoming_call", caller_phone=caller_phone)
+                text_status=make_status("incoming_call", caller_phone=caller_phone, metadata={'conversation_id': conversation_id})
             )
         )
         print(f"[SESSION] incoming_call → user={self.user_uuid}", flush=True)
