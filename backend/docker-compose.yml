@@ -72,6 +72,8 @@ services:
         - NONROOT_USERNAME=ubuntu
         - PROJECT_PATH=/project/fraud
         - WHISPER_MODEL=${WHISPER_MODEL}
+      secrets:
+        - HF_TOKEN
     restart: on-failure
     ports:
       - "60015:60015"
