@@ -15,10 +15,10 @@ redis_client: redis.Redis | None = None
 
 async def _init_connection(conn: asyncpg.Connection):
     await conn.set_type_codec(
-        'jsonb',
+        "jsonb",
         encoder=json.dumps,
         decoder=json.loads,
-        schema='pg_catalog',
+        schema="pg_catalog",
     )
 
 
@@ -101,7 +101,9 @@ async def get_user_latest_conversation(
         }
 
 
-async def create_conversation(user_uuid: str, caller_phone_number: str) -> str:
+async def create_conversation(
+    user_uuid: str, caller_phone_number: str, caller_name: str | None
+) -> str:
     """Creates a new conversation and adds the system message."""
     if pool is None:
         raise Exception("Database connection pool is not initialized.")
@@ -114,11 +116,9 @@ async def create_conversation(user_uuid: str, caller_phone_number: str) -> str:
             """,
             conversation_id,
             uuid.UUID(user_uuid),
-            {"caller_phone_number": caller_phone_number},
+            {"caller_phone_number": caller_phone_number, "caller_name": caller_name},
         )
-        print(
-            f"[INFO] Created new conversation {conversation_id} for user {user_uuid}"
-        )
+        print(f"[INFO] Created new conversation {conversation_id} for user {user_uuid}")
         # await add_message(str(conversation_id), "system", SYSTEM_PROMPT) # Use imported SYSTEM_PROMPT
         return str(conversation_id)
 
