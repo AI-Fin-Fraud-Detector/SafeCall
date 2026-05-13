@@ -71,6 +71,7 @@ services:
       args:
         - NONROOT_USERNAME=ubuntu
         - PROJECT_PATH=/project/fraud
+        - WHISPER_MODEL=${WHISPER_MODEL}
     restart: on-failure
     ports:
       - "60015:60015"
