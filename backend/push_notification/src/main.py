@@ -15,6 +15,9 @@ from pywebpush import WebPushException, webpush
 # from apns2.payload import Payload
 from .db_manager import database
 
+PUSH_CONCURRENCY = 100
+push_semaphore = asyncio.Semaphore(PUSH_CONCURRENCY)
+
 # VAPID keys - should be set in environment
 VAPID_PRIVATE_KEY = os.getenv("VAPID_PRIVATE_KEY")
 VAPID_CLAIMS = {
@@ -230,12 +233,16 @@ async def notify_all(payload: NotificationPayload):
         print("WARNING: No subscriptions found. Notification not sent.")
         return {"sent": 0, "failed": 0}
 
-    success, failed = 0, 0
-    for row in results:
-        if await send_push(row, payload_dict):
-            success += 1
-        else:
-            failed += 1
+    tasks = [
+        limited_send_push(row, payload_dict)
+        for row in results
+    ]
+    responses = await asyncio.gather(
+        *tasks,
+        return_exceptions=True,
+    )
+    success = sum(r is True for r in responses)
+    failed = len(responses) - success
 
     return {"sent": success, "failed": failed}
 
@@ -253,12 +260,16 @@ async def notify_user(user_id: str, payload: NotificationPayload):
         )
         return {"sent": 0, "failed": 0}
 
-    success, failed = 0, 0
-    for row in results:
-        if await send_push(row, payload_dict):
-            success += 1
-        else:
-            failed += 1
+    tasks = [
+        limited_send_push(row, payload_dict)
+        for row in results
+    ]
+    responses = await asyncio.gather(
+        *tasks,
+        return_exceptions=True,
+    )
+    success = sum(r is True for r in responses)
+    failed = len(responses) - success
 
     return {"sent": success, "failed": failed}
 
@@ -270,13 +281,22 @@ async def send_push_to_user(user_id: str, payload: dict, app: str | None = None)
         print(f"WARNING: No subscriptions found for user {user_id}.")
         return 0, 0  # sent, failed
 
-    success, failed = 0, 0
-    for row in results:
-        if await send_push(row, payload):
-            success += 1
-        else:
-            failed += 1
+    tasks = [
+        limited_send_push(row, payload)
+        for row in results
+    ]
+    responses = await asyncio.gather(
+        *tasks,
+        return_exceptions=True,
+    )
+    success = sum(r is True for r in responses)
+    failed = len(responses) - success
     return success, failed
+
+
+async def limited_send_push(subscription, payload):
+    async with push_semaphore:
+        return await send_push(subscription, payload)
 
 
 async def send_push(subscription, payload):

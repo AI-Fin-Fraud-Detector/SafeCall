@@ -1,11 +1,22 @@
 import asyncio
-import sys
 import os
 import uuid
-import numpy as np
+from typing import Literal
 
-import voice_pb2
+import numpy as np
 from google.protobuf.struct_pb2 import Struct
+from pydantic import BaseModel
+
+from .protos import voice_pb2
+from .const import (
+    ANTI_FRAUD_SYSTEM_PROMPT as SYSTEM_PROMPT,
+)
+from .const import (
+    MAX_TOKENS,
+    TEMPERATURE,
+    TOP_P,
+)
+from .notifications import NotificationPayload, send_push
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
@@ -15,14 +26,12 @@ TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 VOICE_MODEL = os.getenv("VOICE_MODEL", "alloy")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from const import (
-    ANTI_FRAUD_SYSTEM_PROMPT as SYSTEM_PROMPT,
-    MAX_TOKENS,
-    TEMPERATURE,
-    TOP_P,
-)
+class MessageContent(BaseModel):
+    id: uuid.UUID
+    role: str | None = None
+    content: str | None = None
+    metadata: dict | None = None
 
 
 def make_status(type: str, **kwargs) -> Struct:
@@ -60,7 +69,7 @@ class _Session:
 
     # ─── Call lifecycle ──────────────────────────────────────────────────────
 
-    async def on_incoming_call(self, conversation_id: str, caller_phone: str = ""):
+    async def on_incoming_call(self, conversation_id: str, caller_phone: str = "", caller_name: str | None = None):
         self.conversation_id = conversation_id
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -68,7 +77,10 @@ class _Session:
                 "WHERE conversation_id = $1 ORDER BY created_at ASC",
                 uuid.UUID(conversation_id),
             )
-            self.messages = [{"id": r["id"], "role": r["role"], "content": r["content"]} for r in rows]
+            self.messages = [
+                {"id": r["id"], "role": r["role"], "content": r["content"]}
+                for r in rows
+            ]
 
         if not self.messages:
             sys_id = await self._save_message("system", SYSTEM_PROMPT)
@@ -77,7 +89,12 @@ class _Session:
         self.call_active.set()
         await self.response_queue.put(
             voice_pb2.ServerMessage(
-                text_status=make_status("incoming_call", caller_phone=caller_phone)
+                text_status=make_status(
+                    "incoming_call",
+                    caller_phone=caller_phone,
+                    caller_name=caller_name,
+                    metadata={"conversation_id": conversation_id},
+                )
             )
         )
         print(f"[SESSION] incoming_call → user={self.user_uuid}", flush=True)
@@ -111,13 +128,56 @@ class _Session:
         async with self.db_pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO messages (id, conversation_id, role, content) VALUES ($1, $2, $3, $4)",
-                msg_id, uuid.UUID(self.conversation_id), role, content,
+                msg_id,
+                uuid.UUID(self.conversation_id),
+                role,
+                content,
             )
             await conn.execute(
                 "UPDATE conversations SET updated_at = NOW() WHERE id = $1",
                 uuid.UUID(self.conversation_id),
             )
         return msg_id
+
+    async def _push_message(
+        self,
+        user_id: uuid.UUID,
+        conversation_id: uuid.UUID,
+        message_content: MessageContent,
+        msg_type: str = Literal[
+            "call_new_message",
+            "call_update_message",
+            "call_delete_message",
+        ],
+    ):
+        if msg_type in {"call_new_message", "call_update_message"}:
+            await send_push(
+                target_user_id=user_id,
+                payload=NotificationPayload(
+                    data={
+                        "type": msg_type,
+                        "conversation_id": str(conversation_id),
+                        "message": message_content.model_dump(),
+                    },
+                    silent=True,
+                ),
+                app="kebbi",
+            )
+        elif msg_type == "call_delete_message":
+            await send_push(
+                target_user_id=user_id,
+                payload=NotificationPayload(
+                    data={
+                        "type": msg_type,
+                        "conversation_id": str(conversation_id),
+                        "message": {
+                            "id": str(message_content.id),
+                        },
+                    },
+                    silent=True,
+                ),
+                app="kebbi",
+            )
 
     # ─── gRPC session ────────────────────────────────────────────────────────
 
@@ -130,11 +190,16 @@ class _Session:
                 if self.call_ended.is_set() and self.response_queue.empty():
                     break
                 try:
-                    response = await asyncio.wait_for(self.response_queue.get(), timeout=0.1)
+                    response = await asyncio.wait_for(
+                        self.response_queue.get(), timeout=0.1
+                    )
                     yield response
                 except asyncio.TimeoutError:
                     if read_task.done():
-                        print(f"[CONN] Request handler finished, closing session: user={self.user_uuid}", flush=True)
+                        print(
+                            f"[CONN] Request handler finished, closing session: user={self.user_uuid}",
+                            flush=True,
+                        )
                         break
         except Exception as e:
             print(f"[SESSION] Error: {e}", flush=True)
@@ -166,7 +231,9 @@ class _Session:
                         print("[INTERRUPT] audio_sent=False → append mode", flush=True)
                 elif message.HasField("audio_chunk"):
                     if self.call_active.is_set() and self.recorder:
-                        await asyncio.to_thread(self.recorder.feed_audio, message.audio_chunk)
+                        await asyncio.to_thread(
+                            self.recorder.feed_audio, message.audio_chunk
+                        )
                 else:
                     payload_type = message.WhichOneof("payload")
                     print(f"\n[WARN] Unknown payload: {payload_type}", flush=True)
@@ -182,6 +249,7 @@ class _Session:
         try:
             print("[STT] Initializing RealtimeSTT engine...", flush=True)
             from RealtimeSTT import AudioToTextRecorder
+
             self.recorder = AudioToTextRecorder(
                 use_microphone=False,
                 model=WHISPER_MODEL,
@@ -205,7 +273,9 @@ class _Session:
         if not text or not text.strip():
             return
         if (self.is_prompting or self.is_generating_tts) and self.loop:
-            print(f"\n[REALTIME] Speech detected during generation: '{text}'", flush=True)
+            print(
+                f"\n[REALTIME] Speech detected during generation: '{text}'", flush=True
+            )
             asyncio.run_coroutine_threadsafe(self._cancel_on_realtime(), self.loop)
 
     async def _cancel_on_realtime(self):
@@ -239,13 +309,17 @@ class _Session:
                 self.pending_prompt = text
                 self.audio_sent = False
                 await self.response_queue.put(
-                    voice_pb2.ServerMessage(text_status=make_status("stt_result", text=text))
+                    voice_pb2.ServerMessage(
+                        text_status=make_status("stt_result", text=text)
+                    )
                 )
                 self.interrupt_event.clear()
                 self.is_prompting = False
                 self.is_generating_tts = False
                 self._cancel_current_task()
-                self.current_task = asyncio.create_task(self._process_and_respond(text, is_append=is_append))
+                self.current_task = asyncio.create_task(
+                    self._process_and_respond(text, is_append=is_append)
+                )
         except asyncio.CancelledError:
             pass
         except Exception as e:
@@ -256,6 +330,7 @@ class _Session:
     async def _process_and_respond(self, text: str, is_append: bool = False):
         try:
             from openai import AsyncOpenAI
+
             client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
             if self.interrupt_event.is_set():
@@ -271,7 +346,9 @@ class _Session:
                 return
 
             await self.response_queue.put(
-                voice_pb2.ServerMessage(text_status=make_status("llm_response", text=response_text))
+                voice_pb2.ServerMessage(
+                    text_status=make_status("llm_response", text=response_text)
+                )
             )
 
             self.is_generating_tts = True
@@ -290,21 +367,53 @@ class _Session:
 
     async def _prepare_user_message(self, text: str, is_append: bool):
         if is_append:
-            last_user_idx = next(
-                (i for i in range(len(self.messages) - 1, -1, -1) if self.messages[i]["role"] == "user"),
+            last_user_msg_idx = next(
+                (
+                    i
+                    for i in range(len(self.messages) - 1, -1, -1)
+                    if self.messages[i]["role"] == "user"
+                ),
                 None,
             )
-            if last_user_idx is not None:
-                stale_ids = [m["id"] for m in self.messages[last_user_idx + 1:] if m.get("id")]
-                del self.messages[last_user_idx + 1:]
-                self.messages[last_user_idx]["content"] = text
-                old_id = self.messages[last_user_idx].get("id")
+            if last_user_msg_idx is not None:
+                stale_ids = [
+                    m["id"] for m in self.messages[last_user_msg_idx + 1 :] if m.get("id")
+                ]
+                del self.messages[last_user_msg_idx + 1 :]
+                self.messages[last_user_msg_idx]["content"] = text
+                old_id = self.messages[last_user_msg_idx].get("id")
+                if self.user_uuid and stale_ids and self.user_uuid and self.conversation_id:
+                    for st_id in stale_ids:
+                        asyncio.create_task(
+                            self._push_message(
+                                user_id=uuid.UUID(self.user_uuid),
+                                conversation_id=uuid.UUID(self.conversation_id),
+                                message_content=MessageContent(
+                                    id=st_id
+                                ),
+                                msg_type="call_delete_message",
+                            )
+                        )
+                if old_id and self.user_uuid and self.conversation_id:
+                    asyncio.create_task(
+                        self._push_message(
+                            user_id=uuid.UUID(self.user_uuid),
+                            conversation_id=uuid.UUID(self.conversation_id),
+                            message_content=MessageContent(
+                                id=old_id,
+                                role="user",
+                                content=text,
+                            ),
+                            msg_type="call_update_message",
+                        )
+                    )
                 if self.db_pool and self.conversation_id:
                     async with self.db_pool.acquire() as conn:
                         if old_id:
                             await conn.execute(
                                 "UPDATE messages SET content = $1 WHERE id = $2",
-                                text, old_id,
+                                text,
+                                old_id,
                             )
                         if stale_ids:
                             await conn.execute(
@@ -312,13 +421,29 @@ class _Session:
                                 stale_ids,
                             )
                 return
-        user_id = await self._save_message("user", text)
-        self.messages.append({"id": user_id, "role": "user", "content": text})
+        user_message_id = await self._save_message("user", text)
+        self.messages.append({"id": user_message_id, "role": "user", "content": text})
+        if self.user_uuid and self.conversation_id and user_message_id:
+            await self._push_message(
+                user_id=uuid.UUID(self.user_uuid),
+                conversation_id=uuid.UUID(self.conversation_id),
+                message_content=MessageContent(
+                    id=user_message_id, role="user", content=text
+                ),
+                msg_type="call_new_message",
+            )
 
     async def _call_llm(self, client) -> str:
-        llm_messages = [{"role": m["role"], "content": m["content"]} for m in self.messages]
-        last_user = next((m["content"] for m in reversed(llm_messages) if m["role"] == "user"), "")
-        print(f"[LLM] Prompting: {last_user[:60]}{'...' if len(last_user) > 60 else ''}", flush=True)
+        llm_messages = [
+            {"role": m["role"], "content": m["content"]} for m in self.messages
+        ]
+        last_user = next(
+            (m["content"] for m in reversed(llm_messages) if m["role"] == "user"), ""
+        )
+        print(
+            f"[LLM] Prompting: {last_user[:60]}{'...' if len(last_user) > 60 else ''}",
+            flush=True,
+        )
         llm_resp = await client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=llm_messages,
@@ -330,8 +455,10 @@ class _Session:
         )
         response_text = llm_resp.choices[0].message.content
         print(f"[LLM] Response: {response_text}", flush=True)
-        asst_id = await self._save_message("assistant", response_text)
-        self.messages.append({"id": asst_id, "role": "assistant", "content": response_text})
+        assistant_message_id = await self._save_message("assistant", response_text)
+        self.messages.append(
+            {"id": assistant_message_id, "role": "assistant", "content": response_text}
+        )
         return response_text
 
     async def _stream_tts(self, client, response_text: str):
@@ -346,7 +473,9 @@ class _Session:
         if self.interrupt_event.is_set():
             return
 
-        audio_24k = np.frombuffer(tts_resp.content, dtype=np.int16).astype(np.float32) / 32767.0
+        audio_24k = (
+            np.frombuffer(tts_resp.content, dtype=np.int16).astype(np.float32) / 32767.0
+        )
         audio_16k = self._resample(audio_24k, 24000, 16000)
         audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
         print(f"[TTS] Streaming {len(audio_bytes)} bytes...", flush=True)
@@ -359,7 +488,7 @@ class _Session:
             if not self.audio_sent:
                 self.audio_sent = True
             await self.response_queue.put(
-                voice_pb2.ServerMessage(audio_response=audio_bytes[i:i + chunk_size])
+                voice_pb2.ServerMessage(audio_response=audio_bytes[i : i + chunk_size])
             )
 
         await self.response_queue.put(
@@ -381,7 +510,10 @@ class _Session:
                 item = self.response_queue.get_nowait()
                 if item.HasField("audio_response"):
                     pass
-                elif item.HasField("text_status") and dict(item.text_status).get("type") == "playback_complete":
+                elif (
+                    item.HasField("text_status")
+                    and dict(item.text_status).get("type") == "playback_complete"
+                ):
                     pass
                 else:
                     kept.append(item)

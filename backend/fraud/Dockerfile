@@ -117,7 +117,8 @@ COPY --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} --from=prod-prepare ${VENV_
 USER ${NONROOT_USERNAME}
 
 ARG WHISPER_MODEL
-RUN PYTHONDONTWRITEBYTECODE=1 python - << 'EOF'
+RUN --mount=type=secret,id=HF_TOKEN,env=HF_TOKEN,required=false \
+    PYTHONDONTWRITEBYTECODE=1 python - << 'EOF'
 import os
 import torch
 import sys
@@ -161,10 +162,10 @@ COPY --exclude=.devcontainer/ --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} . 
 
 # Generate gRPC stubs from the proto definition
 RUN PYTHONDONTWRITEBYTECODE=1 python -m grpc_tools.protoc \
-    -I protos \
-    --python_out=src \
-    --grpc_python_out=src \
-    protos/voice.proto
+    -I src/protos \
+    --python_out=src/protos \
+    --grpc_python_out=src/protos \
+    src/protos/voice.proto
 
 # RUN useradd -ms /bin/bash ${NONROOT_USERNAME} --user-group
 USER ${NONROOT_USERNAME}

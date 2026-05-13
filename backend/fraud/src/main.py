@@ -1,5 +1,4 @@
 import asyncio
-import json
 import os
 import sys
 import uuid
@@ -13,12 +12,11 @@ from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-# voice_pb2_grpc uses a flat `import voice_pb2`; add src/ to sys.path so it resolves
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import voice_pb2_grpc
-
 from .db_manager import database
+from .notifications import send_push, NotificationPayload
 from .voice_session import _Session
+
+from .protos import voice_pb2_grpc
 
 FRAUD_DETECTION_API_URL = os.getenv("FRAUD_DETECTION_API_URL", "")
 
@@ -30,6 +28,7 @@ _grpc_server: grpc.aio.Server | None = None
 
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
+
 
 async def validate_token(token: str) -> Optional[str]:
     """Returns user_uuid string if the token is valid, else None."""
@@ -49,13 +48,16 @@ async def validate_token(token: str) -> Optional[str]:
 
 # ─── gRPC servicer ────────────────────────────────────────────────────────────
 
+
 class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
     async def Session(self, request_iterator, context):
         metadata = dict(context.invocation_metadata())
         token = metadata.get("authorization", "")
         user_uuid = await validate_token(token)
         if not user_uuid:
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired token")
+            await context.abort(
+                grpc.StatusCode.UNAUTHENTICATED, "Invalid or expired token"
+            )
             return
 
         print(f"[gRPC] Session authenticated: user={user_uuid}", flush=True)
@@ -74,6 +76,7 @@ class VoiceServiceServicer(voice_pb2_grpc.VoiceServiceServicer):
 
 # ─── FastAPI lifespan ─────────────────────────────────────────────────────────
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global _grpc_server
@@ -82,7 +85,9 @@ async def lifespan(app: FastAPI):
         await database.redis_client.ping()
 
     _grpc_server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
-    voice_pb2_grpc.add_VoiceServiceServicer_to_server(VoiceServiceServicer(), _grpc_server)
+    voice_pb2_grpc.add_VoiceServiceServicer_to_server(
+        VoiceServiceServicer(), _grpc_server
+    )
     _grpc_server.add_insecure_port("[::]:60015")
     await _grpc_server.start()
     print("[gRPC] Server listening on [::]:60015", flush=True)
@@ -114,37 +119,18 @@ app.add_middleware(
 
 # ─── Pydantic models ──────────────────────────────────────────────────────────
 
+
 class IncomingCallRequest(BaseModel):
     phone_number: str
+    caller_name: str | None = None
 
 
 class CallEventRequest(BaseModel):
     callee_user_id: str
 
 
-class NotificationPayload(BaseModel):
-    title: str | None = None
-    body: str | None = None
-    data: dict | None = None
-    silent: bool = False
-    android_priority: str | None = None
-
-
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-
-async def send_push(
-    target_user_id: str,
-    payload: NotificationPayload,
-    app: str | None = None,
-):
-    event = {
-        "target_user_id": target_user_id,
-        "payload": json.dumps(payload.model_dump()),
-        "app": app,
-    }
-    if database.redis_client:
-        await database.redis_client.xadd("push_notification_stream", event)
 
 async def format_conversation_for_detection(conversation_id: str) -> str:
     try:
@@ -191,6 +177,7 @@ async def call_fraud_detection_api(conversation_text: str) -> Optional[bool]:
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
+
 @app.post("/api/fraud/incoming-call")
 async def incoming_call(
     body: IncomingCallRequest,
@@ -198,20 +185,23 @@ async def incoming_call(
     x_email: str | None = Header(None, alias="X-Email"),
     x_installation_id: str | None = Header("", alias="X-Installation-Id"),
 ):
-    print(f"[HTTP] incoming_call: caller={body.phone_number}, callee={x_user_id}", flush=True)
+    print(
+        f"[HTTP] incoming_call: caller={body.phone_number} ({body.caller_name}), user={x_user_id}",
+        flush=True,
+    )
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
 
-    conversation_id = await database.create_conversation(x_user_id)
     caller_phone_number = body.phone_number
-    
+    conversation_id = await database.create_conversation(x_user_id, caller_phone_number, body.caller_name)
+
     is_fraud_detection_enabled = await database.is_fraud_detection_enabled(x_user_id)
 
     if is_fraud_detection_enabled:
         async with sessions_lock:
             session = active_sessions.get(x_user_id)
         if session:
-            await session.on_incoming_call(conversation_id, body.phone_number)
+            await session.on_incoming_call(conversation_id, body.phone_number, body.caller_name)
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
 
@@ -224,15 +214,17 @@ async def incoming_call(
                     "type": "incoming_call",
                     "detail": {
                         "phone_number": caller_phone_number,
-                    }
+                        "caller_name": body.caller_name,
+                        "conversation_id": conversation_id,
+                    },
                 },
                 silent=False,
             ),
-            app="kebbi"
+            app="kebbi",
         )
 
         return {"status": "ok", "fraud_detection": "enabled"}
-    
+
     else:
         call_token = await database.set_call_token(caller_phone_number, x_user_id)
         async with sessions_lock:
@@ -251,12 +243,12 @@ async def incoming_call(
                     "type": "incoming_call",
                     "detail": {
                         "phone_number": caller_phone_number,
-                    }
+                    },
                 },
                 silent=True,
                 android_priority="high",
             ),
-            app="kebbi"
+            app="kebbi",
         )
         return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
 
@@ -284,19 +276,230 @@ async def call_end(
         session = active_sessions.get(body.callee_user_id)
     if session:
         await session.on_call_end("call_end")
-    send_push(
+    await send_push(
         target_user_id=x_user_id,
         payload=NotificationPayload(
-            data={
-                "type": "call_event",
-                "action": "hangup"
-            },
+            data={"type": "call_event", "action": "hangup"},
             silent=True,
             android_priority="high",
         ),
-        app="host_mobile"
+        app="host_mobile",
     )
     return {"status": "ok"}
+
+
+@app.get("/api/fraud/conversations")
+async def get_conversations(
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+    before: str | None = None,
+    limit: int = 50,
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        if before:
+            try:
+                before_uuid = uuid.UUID(before)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid before cursor")
+            rows = await conn.fetch(
+                """
+                SELECT id, title, metadata, created_at, updated_at
+                FROM conversations
+                WHERE user_uuid = $1 AND type = 'phone'
+                  AND created_at < (SELECT created_at FROM conversations WHERE id = $2)
+                ORDER BY created_at DESC
+                LIMIT $3
+                """,
+                uuid.UUID(x_user_id),
+                before_uuid,
+                limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, title, metadata, created_at, updated_at
+                FROM conversations
+                WHERE user_uuid = $1 AND type = 'phone'
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                uuid.UUID(x_user_id),
+                limit,
+            )
+
+    conversations = [
+        {
+            "conversation_id": str(r["id"]),
+            "title": r["title"],
+            "metadata": r["metadata"],
+            "created_at": r["created_at"].isoformat(),
+            "updated_at": r["updated_at"].isoformat(),
+        }
+        for r in rows
+    ]
+    return {
+        "conversations": conversations,
+        "next_cursor": conversations[-1]["conversation_id"]
+        if len(conversations) == limit
+        else None,
+    }
+
+
+@app.get("/api/fraud/conversations/{conversation_id}")
+async def get_conversation_info(
+    conversation_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation_id")
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT * FROM conversations WHERE id = $1 AND user_uuid = $2 AND type = 'phone'",
+            conv_uuid,
+            uuid.UUID(x_user_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+        return {
+            "conversation_id": str(row["id"]),
+            "title": row["title"],
+            "metadata": row["metadata"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+
+@app.get("/api/fraud/conversations/{conversation_id}/messages")
+async def get_messages(
+    conversation_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+    before: str | None = None,
+    limit: int = 50,
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit must be between 1 and 200")
+
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid conversation_id")
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id FROM conversations WHERE id = $1 AND user_uuid = $2 AND type = 'phone'",
+            conv_uuid,
+            uuid.UUID(x_user_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if before:
+            try:
+                before_uuid = uuid.UUID(before)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Invalid before cursor")
+            rows = await conn.fetch(
+                """
+                SELECT id, role, content, metadata, created_at, edited_at
+                FROM messages
+                WHERE conversation_id = $1
+                  AND role != 'system'
+                  AND created_at < (SELECT created_at FROM messages WHERE id = $2)
+                ORDER BY created_at DESC
+                LIMIT $3
+                """,
+                conv_uuid,
+                before_uuid,
+                limit,
+            )
+        else:
+            rows = await conn.fetch(
+                """
+                SELECT id, role, content, metadata, created_at, edited_at
+                FROM messages
+                WHERE conversation_id = $1
+                  AND role != 'system'
+                ORDER BY created_at DESC
+                LIMIT $2
+                """,
+                conv_uuid,
+                limit,
+            )
+
+    messages = [
+        {
+            "id": str(r["id"]),
+            "role": r["role"],
+            "content": r["content"],
+            "metadata": r["metadata"],
+            "created_at": r["created_at"].isoformat(),
+            "edited_at": r["edited_at"].isoformat() if r["edited_at"] else None,
+        }
+        for r in reversed(rows)
+    ]
+    return {
+        "messages": messages,
+        "next_cursor": messages[0]["id"] if len(messages) == limit else None,
+    }
+
+
+@app.get("/api/fraud/conversations/{conversation_id}/messages/{message_id}")
+async def get_single_message(
+    conversation_id: str,
+    message_id: str,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+
+    try:
+        conv_uuid = uuid.UUID(conversation_id)
+        msg_uuid = uuid.UUID(message_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=400, detail="Invalid conversation_id or message_id"
+        )
+
+    if not database.pool:
+        raise HTTPException(status_code=503, detail="Database unavailable")
+
+    async with database.pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT id, role, content, metadata, created_at, edited_at FROM messages WHERE id = $1 AND conversation_id = $2",
+            msg_uuid,
+            conv_uuid,
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Message not found")
+
+    return {
+        "id": str(row["id"]),
+        "role": row["role"],
+        "content": row["content"],
+        "metadata": row["metadata"],
+        "created_at": row["created_at"].isoformat(),
+        "edited_at": row["edited_at"].isoformat() if row["edited_at"] else None,
+    }
 
 
 @app.get("/health")
@@ -321,4 +524,5 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)
