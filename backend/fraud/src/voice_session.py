@@ -459,7 +459,7 @@ class _Session:
                 )
             )
 
-    async def _call_llm(self, client) -> str:
+    async def _call_llm(self, client) -> dict:
         llm_messages = [
             {"role": m["role"], "content": m["content"]} for m in self.messages
         ]
