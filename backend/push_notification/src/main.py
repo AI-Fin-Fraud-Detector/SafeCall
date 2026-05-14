@@ -15,7 +15,7 @@ from pywebpush import WebPushException, webpush
 # from apns2.payload import Payload
 from .db_manager import database
 
-PUSH_CONCURRENCY = 100
+PUSH_CONCURRENCY = 50
 push_semaphore = asyncio.Semaphore(PUSH_CONCURRENCY)
 
 # VAPID keys - should be set in environment
@@ -301,6 +301,7 @@ async def limited_send_push(subscription, payload):
 
 async def send_push(subscription, payload):
     print("Sending push: ", subscription)
+    print("Payload: ", payload)
     endpoint = subscription["endpoint"]
     platform = subscription.get("platform", "web")
     if platform == "web":
@@ -357,7 +358,10 @@ async def send_push(subscription, payload):
             # Start with required args
             message_kwargs = {
                 "token": endpoint,
-                "data": {k: str(v) for k, v in (payload.get("data") or {}).items()},
+                "data": {
+                    k: json.dumps(v) if isinstance(v, (dict, list)) else str(v)
+                    for k, v in (payload.get("data") or {}).items()
+                },
             }
 
             # Add notification only if not silent

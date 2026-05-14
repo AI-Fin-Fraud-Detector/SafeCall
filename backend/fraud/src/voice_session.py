@@ -69,7 +69,12 @@ class _Session:
 
     # ─── Call lifecycle ──────────────────────────────────────────────────────
 
-    async def on_incoming_call(self, conversation_id: str, caller_phone: str = "", caller_name: str | None = None):
+    async def on_incoming_call(
+        self,
+        conversation_id: str,
+        caller_phone: str = "",
+        caller_name: str | None = None,
+    ):
         self.conversation_id = conversation_id
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
@@ -339,11 +344,25 @@ class _Session:
             self.is_prompting = True
             await self._prepare_user_message(text, is_append)
 
-            response_text = await self._call_llm(client)
+            response_dict = await self._call_llm(client)
+            response_text = response_dict["content"]
             self.is_prompting = False
 
             if self.interrupt_event.is_set():
                 return
+
+            asyncio.create_task(
+                self._push_message(
+                    user_id=uuid.UUID(self.user_uuid),
+                    conversation_id=uuid.UUID(self.conversation_id),
+                    message_content=MessageContent(
+                        id=response_dict["id"],
+                        role=response_dict["role"],
+                        content=response_text,
+                    ),
+                    msg_type="call_new_message",
+                )
+            )
 
             await self.response_queue.put(
                 voice_pb2.ServerMessage(
@@ -377,20 +396,25 @@ class _Session:
             )
             if last_user_msg_idx is not None:
                 stale_ids = [
-                    m["id"] for m in self.messages[last_user_msg_idx + 1 :] if m.get("id")
+                    m["id"]
+                    for m in self.messages[last_user_msg_idx + 1 :]
+                    if m.get("id")
                 ]
                 del self.messages[last_user_msg_idx + 1 :]
                 self.messages[last_user_msg_idx]["content"] = text
                 old_id = self.messages[last_user_msg_idx].get("id")
-                if self.user_uuid and stale_ids and self.user_uuid and self.conversation_id:
+                if (
+                    self.user_uuid
+                    and stale_ids
+                    and self.user_uuid
+                    and self.conversation_id
+                ):
                     for st_id in stale_ids:
                         asyncio.create_task(
                             self._push_message(
                                 user_id=uuid.UUID(self.user_uuid),
                                 conversation_id=uuid.UUID(self.conversation_id),
-                                message_content=MessageContent(
-                                    id=st_id
-                                ),
+                                message_content=MessageContent(id=st_id),
                                 msg_type="call_delete_message",
                             )
                         )
@@ -424,16 +448,18 @@ class _Session:
         user_message_id = await self._save_message("user", text)
         self.messages.append({"id": user_message_id, "role": "user", "content": text})
         if self.user_uuid and self.conversation_id and user_message_id:
-            await self._push_message(
-                user_id=uuid.UUID(self.user_uuid),
-                conversation_id=uuid.UUID(self.conversation_id),
-                message_content=MessageContent(
-                    id=user_message_id, role="user", content=text
-                ),
-                msg_type="call_new_message",
+            asyncio.create_task(
+                self._push_message(
+                    user_id=uuid.UUID(self.user_uuid),
+                    conversation_id=uuid.UUID(self.conversation_id),
+                    message_content=MessageContent(
+                        id=user_message_id, role="user", content=text
+                    ),
+                    msg_type="call_new_message",
+                )
             )
 
-    async def _call_llm(self, client) -> str:
+    async def _call_llm(self, client) -> dict:
         llm_messages = [
             {"role": m["role"], "content": m["content"]} for m in self.messages
         ]
@@ -456,10 +482,13 @@ class _Session:
         response_text = llm_resp.choices[0].message.content
         print(f"[LLM] Response: {response_text}", flush=True)
         assistant_message_id = await self._save_message("assistant", response_text)
-        self.messages.append(
-            {"id": assistant_message_id, "role": "assistant", "content": response_text}
-        )
-        return response_text
+        message_dict = {
+            "id": assistant_message_id,
+            "role": "assistant",
+            "content": response_text,
+        }
+        self.messages.append(message_dict)
+        return message_dict
 
     async def _stream_tts(self, client, response_text: str):
         print("[TTS] Generating audio...", flush=True)
