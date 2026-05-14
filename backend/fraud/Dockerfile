@@ -157,6 +157,12 @@ except Exception as e:
     raise RuntimeError(f"Failed to initialize AudioToTextRecorder: {e}")
 EOF
 
+RUN --mount=type=secret,id=HF_TOKEN,env=HF_TOKEN,required=false \
+    PYTHONDONTWRITEBYTECODE=1 python - << 'EOF'
+from supertonic import TTS
+tts = TTS(auto_download=True)
+EOF
+
 
 COPY --exclude=.devcontainer/ --chown=${NONROOT_USERNAME}:${NONROOT_USERNAME} . .
 
