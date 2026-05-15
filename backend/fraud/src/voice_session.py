@@ -23,15 +23,16 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
     raise Exception("OpenAI API key not configured")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
-VOICE_MODEL = os.getenv("VOICE_MODEL", "alloy")
+OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+OPENAI_VOICE_MODEL = os.getenv("OPENAI_VOICE_MODEL", "alloy")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
 USE_SUPERTONIC_TTS = os.getenv("USE_SUPERTONIC_TTS", "").lower() in ("1", "true", "yes")
+SUPERTONIC_VOICE = os.getenv("SUPERTONIC_VOICE", "M3")
 
 if USE_SUPERTONIC_TTS:
     from supertonic import TTS as _SupertonicTTS
     _tts = _SupertonicTTS(auto_download=True)
-    _tts_style = _tts.get_voice_style(voice_name="M3")
+    _tts_style = _tts.get_voice_style(voice_name=SUPERTONIC_VOICE)
 
 
 class MessageContent(BaseModel):
@@ -507,7 +508,7 @@ class _Session:
                 response_text,
                 voice_style=_tts_style,
                 lang="en",
-                speed=0.8,
+                speed=0.85,
                 total_steps=10,
             )
             print(f"[TTS] Generated in {time.perf_counter() - t0:.2f}s", flush=True)
@@ -519,8 +520,8 @@ class _Session:
             audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
         else:
             tts_resp = await client.audio.speech.create(
-                model=TTS_MODEL,
-                voice=VOICE_MODEL,
+                model=OPENAI_TTS_MODEL,
+                voice=OPENAI_VOICE_MODEL,
                 input=response_text,
                 response_format="pcm",
             )
