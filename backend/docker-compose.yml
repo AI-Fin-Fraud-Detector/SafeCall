@@ -14,9 +14,12 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE_NAME: ${DB_DATABASE_NAME}
       PROJECT_PATH: /project/auth
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
   db:
     image: postgres:18-alpine
     restart: on-failure

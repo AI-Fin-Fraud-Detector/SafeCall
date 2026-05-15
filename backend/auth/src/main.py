@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 
 import asyncpg
+import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -22,6 +23,12 @@ DB_PORT = os.getenv("DB_PORT", "5432")
 DATABASE_URL = (
     f"postgresql://{DB_USERNAME}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_DATABASE_NAME}"
 )
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
+# --- Device pairing (QR login) ---
+# TTL for the pending phase — how long the QR code stays valid.
+DEVICE_PAIRING_TTL_SECONDS = int(os.getenv("DEVICE_PAIRING_TTL_SECONDS", "60"))
+DEVICE_POLL_INTERVAL_SECONDS = int(os.getenv("DEVICE_POLL_INTERVAL_SECONDS", "3"))
 
 # --- Password Hashing & Token URL ---
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
@@ -29,19 +36,25 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
 # --- Database Pool ---
 pool: Optional[asyncpg.Pool] = None
+redis_client: Optional[aioredis.Redis] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global pool
+    global pool, redis_client
     try:
         pool = await asyncpg.create_pool(DATABASE_URL)
         print("Database pool created successfully.")
+        redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
+        await redis_client.ping()
+        print("Redis connection established.")
         yield
     finally:
         if pool:
             await pool.close()
             print("Database pool closed.")
+        if redis_client:
+            await redis_client.aclose()
 
 
 async def get_db_connection():
@@ -51,6 +64,12 @@ async def get_db_connection():
         )
     async with pool.acquire() as connection:
         yield connection
+
+
+async def get_redis() -> aioredis.Redis:
+    if redis_client is None:
+        raise HTTPException(status_code=503, detail="Redis is not available.")
+    return redis_client
 
 
 # --- Pydantic Models ---
@@ -81,6 +100,22 @@ class LoginRequest(BaseModel):
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"
+
+
+# --- Device pairing (QR login) models ---
+class DevicePairResponse(BaseModel):
+    device_code: str
+    pairing_code: str
+    expires_in: int
+    interval: int
+
+
+class DeviceApproveRequest(BaseModel):
+    pairing_code: str
+
+
+class DeviceTokenRequest(BaseModel):
+    device_code: str
 
 
 # --- Main Application Instance ---
@@ -277,6 +312,83 @@ async def delete_user(
 @app.get("/api/auth/status", response_model=User)
 async def read_users_me(current_user: UserInDB = Depends(get_current_user)):
     return current_user
+
+
+# --- Device pairing (QR login) endpoints ---
+#
+# Session state lives in Redis (no DB table needed):
+#   device:pair:{pairing_code}  → {device_code, device_label}  TTL=DEVICE_PAIRING_TTL_SECONDS
+#   device:poll:{device_code}   → {status:"pending"} or {status:"approved",token:...}
+#
+# Flow:
+#   1. Edge calls /pair → gets device_code (kept secret) + pairing_code (shown in QR).
+#   2. Phone scans QR, calls /approve → pair key is atomically deleted (prevents re-use),
+#      token is minted in postgres, poll key overwritten with token (TTL 30 s).
+#   3. Edge polls /token → on "approved" the poll key is deleted and token returned once.
+#      Key absence (TTL expired or already consumed) returns 404.
+
+
+@app.post("/api/auth/device/pair", response_model=DevicePairResponse)
+async def device_pair(
+    r: aioredis.Redis = Depends(get_redis),
+):
+    device_code = secrets.token_urlsafe(32)
+    pairing_code = secrets.token_urlsafe(16)
+    await r.setex(
+        f"device:pair:{pairing_code}",
+        DEVICE_PAIRING_TTL_SECONDS,
+        device_code,
+    )
+    await r.setex(
+        f"device:poll:{device_code}",
+        DEVICE_PAIRING_TTL_SECONDS,
+        "pending",
+    )
+    return DevicePairResponse(
+        device_code=device_code,
+        pairing_code=pairing_code,
+        expires_in=DEVICE_PAIRING_TTL_SECONDS,
+        interval=DEVICE_POLL_INTERVAL_SECONDS,
+    )
+
+
+@app.post("/api/auth/device/approve")
+async def device_approve(
+    request: Request,
+    body: DeviceApproveRequest,
+    current_user: UserInDB = Depends(get_current_user),
+    conn: asyncpg.Connection = Depends(get_db_connection),
+    r: aioredis.Redis = Depends(get_redis),
+):
+    # Atomically consume the pairing_code (GETDEL prevents double-approval).
+    device_code = await r.getdel(f"device:pair:{body.pairing_code}")
+    if device_code is None:
+        raise HTTPException(status_code=404, detail="Pairing code not found")
+
+    user_agent = request.headers.get("User-Agent")
+    ip_address = request.headers.get("X-Real-IP") or request.headers.get("X-Forwarded-For")
+    token = await create_token(conn, current_user.uuid, user_agent, ip_address)
+
+    # Give the edge 30 s to pick up the token on its next poll.
+    await r.setex(f"device:poll:{device_code}", 30, token)
+    return {"status": "approved"}
+
+
+@app.post("/api/auth/device/token")
+async def device_token(
+    body: DeviceTokenRequest,
+    r: aioredis.Redis = Depends(get_redis),
+):
+    raw = await r.get(f"device:poll:{body.device_code}")
+    if raw is None:
+        raise HTTPException(status_code=404, detail="Invalid device code")
+
+    if raw == "pending":
+        return {"status": "pending"}
+
+    # It's the token — delete the key so it's delivered exactly once.
+    await r.delete(f"device:poll:{body.device_code}")
+    return {"status": "approved", "access_token": raw, "token_type": "bearer"}
 
 
 if __name__ == "__main__":
