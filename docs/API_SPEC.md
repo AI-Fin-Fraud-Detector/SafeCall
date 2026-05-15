@@ -121,6 +121,119 @@ Return the profile of the currently authenticated user.
 
 ---
 
+## Device Pairing (QR Login) Endpoints
+
+Used to log in a headless edge device (e.g. a Kebbi robot) that has no keyboard.
+Session state lives entirely in Redis — no Postgres table is used.
+
+All three endpoints live under `/api/auth/` and therefore **bypass nginx token
+validation** — the edge device is unauthenticated until pairing completes, and
+the approve step authenticates itself with a Bearer token.
+
+```
+edge: POST /api/auth/device/pair          ──▶  { device_code, pairing_code }
+edge: show QR encoding `pairing_code`
+edge: POST /api/auth/device/token (poll)  ──▶  { status: "pending" }
+phone: POST /api/auth/device/approve      ──▶  pairing_code key deleted; token minted
+edge: POST /api/auth/device/token (poll)  ──▶  { status: "approved", access_token }
+                                               (poll key deleted — token delivered once)
+edge: POST /api/auth/device/token (again) ──▶  404 (key gone)
+```
+
+Redis keys:
+- `device:pair:{pairing_code}` — exists while pending; TTL = `DEVICE_PAIRING_TTL_SECONDS`.
+  Deleted atomically on `/approve` (prevents re-use).
+- `device:poll:{device_code}` — pending for the full TTL; overwritten with `{approved, token}`
+  for 30 s after approval; deleted when the edge picks up the token.
+
+---
+
+### POST /api/auth/device/pair
+
+Start a pairing session. Called by the edge device. **No authentication.**
+
+No request body.
+
+**Response `200`**
+
+```json
+{
+  "device_code": "mi-Vl37mTcCqWqMS-pVhKBw6IsO0C4YjPyTcExZ6lD4",
+  "pairing_code": "_FgqVCQ8kif61ON2WfaKWg",
+  "expires_in": 60,
+  "interval": 3
+}
+```
+
+| Field | Description |
+|---|---|
+| `device_code` | Secret the edge device keeps and polls with. Never shown to the user. |
+| `pairing_code` | Short code the edge device encodes into its QR. The phone sends this to approve. |
+| `expires_in` | Seconds until the pairing session expires. |
+| `interval` | Suggested seconds between polls of `/api/auth/device/token`. |
+
+---
+
+### POST /api/auth/device/approve
+
+Approve a pairing session. Called by the host_mobile app after scanning the QR.
+**Requires `Authorization: Bearer <access_token>`** of the user the device is
+being linked to.
+
+**Request body** (`application/json`)
+
+| Field | Type | Description |
+|---|---|---|
+| `pairing_code` | string | The code read from the QR code. |
+
+**Response `200`**
+
+```json
+{ "status": "approved" }
+```
+
+On success the `pairing_code` Redis key is deleted (preventing re-use) and a new
+token is created in the `tokens` table for the authenticated user.
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `401` | Missing or invalid Bearer token |
+| `404` | `Pairing code not found` — key expired or already used |
+
+---
+
+### POST /api/auth/device/token
+
+Poll for the device's token. Called repeatedly by the edge device. **No authentication.**
+
+**Request body** (`application/json`)
+
+| Field | Type | Description |
+|---|---|---|
+| `device_code` | string | The `device_code` returned by `/api/auth/device/pair`. |
+
+**Response `200`** — one of:
+
+```json
+{ "status": "pending" }
+```
+```json
+{ "status": "approved", "access_token": "dGhpcyBpcyBh...", "token_type": "bearer" }
+```
+
+The `access_token` is returned **exactly once**: the poll key is deleted immediately
+after delivery. Subsequent polls return `404`. The edge device should cache the token.
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `404` | `Invalid device code` |
+
+---
+
 ## Internal Endpoints
 
 These endpoints are called by nginx only and are not reachable from outside the cluster.
@@ -161,6 +274,10 @@ POST /api/auth/login
   → token created in DB (tokens table)
   → returned to client as access_token
 
+POST /api/auth/device/pair  → device/approve → device/token  (QR login)
+  → session state in Redis; token created in DB (tokens table)
+  → delivered to the edge device on its next poll; Redis key deleted
+
 Every /api/* request (except /api/auth/)
   → nginx calls GET /auth/validate internally
   → X-User-ID and X-Email injected into upstream request
@@ -177,6 +294,8 @@ POST /api/auth/logout
 ```sql
 tokens (
   id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_agent   TEXT,
+  ip_address   VARCHAR(45),
   user_uuid    UUID REFERENCES users(uuid) ON DELETE CASCADE,
   token        TEXT UNIQUE NOT NULL,
   expires_at   TIMESTAMPTZ,          -- NULL means no expiry
@@ -184,6 +303,11 @@ tokens (
   last_used_at TIMESTAMPTZ,
   revoked_at   TIMESTAMPTZ
 )
+
+-- Device pairing sessions live in Redis, not Postgres.
+-- Redis keys (both auto-expire via TTL):
+--   device:pair:{pairing_code} → {device_code}  (pending; deleted on approval)
+--   device:poll:{device_code}  → {status, token} (deleted after token delivery)
 ```
 
 ---

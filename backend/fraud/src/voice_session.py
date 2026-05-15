@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import uuid
 from typing import Literal
 
@@ -7,7 +8,6 @@ import numpy as np
 from google.protobuf.struct_pb2 import Struct
 from pydantic import BaseModel
 
-from .protos import voice_pb2
 from .const import (
     ANTI_FRAUD_SYSTEM_PROMPT as SYSTEM_PROMPT,
 )
@@ -17,6 +17,7 @@ from .const import (
     TOP_P,
 )
 from .notifications import NotificationPayload, send_push
+from .protos import voice_pb2
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 if not OPENAI_API_KEY:
@@ -25,6 +26,12 @@ OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
 TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 VOICE_MODEL = os.getenv("VOICE_MODEL", "alloy")
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")
+USE_SUPERTONIC_TTS = os.getenv("USE_SUPERTONIC_TTS", "").lower() in ("1", "true", "yes")
+
+if USE_SUPERTONIC_TTS:
+    from supertonic import TTS as _SupertonicTTS
+    _tts = _SupertonicTTS(auto_download=True)
+    _tts_style = _tts.get_voice_style(voice_name="M3")
 
 
 class MessageContent(BaseModel):
@@ -492,21 +499,42 @@ class _Session:
 
     async def _stream_tts(self, client, response_text: str):
         print("[TTS] Generating audio...", flush=True)
-        tts_resp = await client.audio.speech.create(
-            model=TTS_MODEL,
-            voice=VOICE_MODEL,
-            input=response_text,
-            response_format="pcm",
-        )
+        t0 = time.perf_counter()
 
-        if self.interrupt_event.is_set():
-            return
+        if USE_SUPERTONIC_TTS:
+            wav, _ = await asyncio.to_thread(
+                _tts.synthesize,
+                response_text,
+                voice_style=_tts_style,
+                lang="en",
+                speed=0.8,
+                total_steps=10,
+            )
+            print(f"[TTS] Generated in {time.perf_counter() - t0:.2f}s", flush=True)
 
-        audio_24k = (
-            np.frombuffer(tts_resp.content, dtype=np.int16).astype(np.float32) / 32767.0
-        )
-        audio_16k = self._resample(audio_24k, 24000, 16000)
-        audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
+            if self.interrupt_event.is_set():
+                return
+
+            audio_16k = self._resample(wav.squeeze(), _tts.sample_rate, 16000)
+            audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
+        else:
+            tts_resp = await client.audio.speech.create(
+                model=TTS_MODEL,
+                voice=VOICE_MODEL,
+                input=response_text,
+                response_format="pcm",
+            )
+            print(f"[TTS] Generated in {time.perf_counter() - t0:.2f}s", flush=True)
+
+            if self.interrupt_event.is_set():
+                return
+
+            audio_24k = (
+                np.frombuffer(tts_resp.content, dtype=np.int16).astype(np.float32) / 32767.0
+            )
+            audio_16k = self._resample(audio_24k, 24000, 16000)
+            audio_bytes = (audio_16k * 32767).astype(np.int16).tobytes()
+
         print(f"[TTS] Streaming {len(audio_bytes)} bytes...", flush=True)
 
         chunk_size = 1024

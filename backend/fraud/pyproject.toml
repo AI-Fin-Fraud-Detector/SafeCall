@@ -17,9 +17,15 @@ dependencies = [
     "realtimestt[faster-whisper]>=1.0.0",
     "redis>=7.1.0",
     "setuptools>=80.9.0",
+    "supertonic>=1.2.1",
     "torch>=2.11.0",
     "torchaudio>=2.11.0",
     "uvicorn>=0.40.0",
+]
+
+[tool.uv]
+override-dependencies = [
+    "numpy>=2.4.4", # override for supertonic
 ]
 
 [[tool.uv.index]]
