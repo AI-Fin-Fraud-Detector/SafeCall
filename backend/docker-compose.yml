@@ -54,8 +54,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
       DB_DATABASE_NAME: ${DB_DATABASE_NAME}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      TTS_MODEL: ${TTS_MODEL:-gpt-4o-mini-tts}
-      VOICE_MODEL: ${VOICE_MODEL:-alloy}
+      OPENAI_TTS_MODEL: ${OPENAI_TTS_MODEL:-gpt-4o-mini-tts}
+      OPENAI_VOICE_MODEL: ${OPENAI_VOICE_MODEL:-alloy}
       FOOD_API_URL: ${FOOD_API_URL}
     deploy:
       resources:
@@ -88,10 +88,12 @@ services:
       DB_DATABASE_NAME: ${DB_DATABASE_NAME}
       FRAUD_DETECTION_API_URL: ${FRAUD_DETECTION_API_URL}
       OPENAI_API_KEY: ${OPENAI_API_KEY}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
-      TTS_MODEL: ${TTS_MODEL:-tts-1}
-      VOICE_MODEL: ${VOICE_MODEL:-alloy}
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      OPENAI_TTS_MODEL: ${OPENAI_TTS_MODEL:-tts-1}
+      OPENAI_VOICE_MODEL: ${OPENAI_VOICE_MODEL:-alloy}
+      USE_SUPERTONIC_TTS: ${USE_SUPERTONIC_TTS}
+      SUPERTONIC_VOICE: ${SUPERTONIC_VOICE}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     depends_on:
       db:
