@@ -72,7 +72,7 @@ async def pair_device() -> str:
             print("  This device is not paired yet.", flush=True)
             print("  Scan this QR code with the SafeCall app to log in:", flush=True)
             print("=" * 60, flush=True)
-            _render_qr(pairing_code)
+            _render_qr(f"safecall://pair_device/{pairing_code}")
             print(f"  Or enter this code manually: {pairing_code}", flush=True)
             print(f"  (expires in {expires_in}s)", flush=True)
             print("=" * 60 + "\n", flush=True)
