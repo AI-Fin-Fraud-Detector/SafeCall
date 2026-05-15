@@ -52,54 +52,57 @@ def _render_qr(payload: str) -> None:
 async def pair_device() -> str:
     """Run the QR device-login flow and return a fresh access token.
 
-    Displays a QR code, then polls the backend until the user approves the
-    pairing from the host_mobile app (or the pairing session expires).
+    Loops until the user approves the pairing: when the QR expires or the
+    session returns 404, a new pairing session is created automatically and
+    a fresh QR code is displayed.
     """
     async with httpx.AsyncClient(timeout=10.0) as client:
-        resp = await client.post(f"{BACKEND_URL}/api/auth/device/pair")
-        resp.raise_for_status()
-        data = resp.json()
+        while True:
+            resp = await client.post(f"{BACKEND_URL}/api/auth/device/pair")
+            resp.raise_for_status()
+            data = resp.json()
 
-        device_code = data["device_code"]
-        pairing_code = data["pairing_code"]
-        interval = data.get("interval", 3)
-        expires_in = data.get("expires_in", 60)
-        deadline = time.monotonic() + expires_in
+            device_code = data["device_code"]
+            pairing_code = data["pairing_code"]
+            interval = data.get("interval", 3)
+            expires_in = data.get("expires_in", 60)
+            deadline = time.monotonic() + expires_in
 
-        print("\n" + "=" * 60, flush=True)
-        print("  This device is not paired yet.", flush=True)
-        print("  Scan this QR code with the SafeCall app to log in:", flush=True)
-        print("=" * 60, flush=True)
-        _render_qr(pairing_code)
-        print(f"  Or enter this code manually: {pairing_code}", flush=True)
-        print(f"  (expires in {expires_in}s)", flush=True)
-        print("=" * 60 + "\n", flush=True)
+            print("\n" + "=" * 60, flush=True)
+            print("  This device is not paired yet.", flush=True)
+            print("  Scan this QR code with the SafeCall app to log in:", flush=True)
+            print("=" * 60, flush=True)
+            _render_qr(pairing_code)
+            print(f"  Or enter this code manually: {pairing_code}", flush=True)
+            print(f"  (expires in {expires_in}s)", flush=True)
+            print("=" * 60 + "\n", flush=True)
 
-        while time.monotonic() < deadline:
-            await asyncio.sleep(interval)
-            try:
-                poll = await client.post(
-                    f"{BACKEND_URL}/api/auth/device/token",
-                    json={"device_code": device_code},
-                )
-            except httpx.HTTPError as e:
-                print(f"[Pairing] Poll error: {e}", flush=True)
-                continue
+            while time.monotonic() < deadline:
+                await asyncio.sleep(interval)
+                try:
+                    poll = await client.post(
+                        f"{BACKEND_URL}/api/auth/device/token",
+                        json={"device_code": device_code},
+                    )
+                except httpx.HTTPError as e:
+                    print(f"[Pairing] Poll error: {e}", flush=True)
+                    continue
 
-            if poll.status_code == 404:
-                raise RuntimeError("Pairing session is no longer valid")
-            poll.raise_for_status()
-            result = poll.json()
-            status = result.get("status")
+                if poll.status_code == 404:
+                    print("[Pairing] Session expired — requesting a new QR...", flush=True)
+                    break
+                poll.raise_for_status()
+                result = poll.json()
+                status = result.get("status")
 
-            if status == "pending":
-                continue
-            if status == "approved":
-                print("[Pairing] Approved — device logged in.", flush=True)
-                return result["access_token"]
-            raise RuntimeError(f"Unexpected pairing status: {status}")
+                if status == "pending":
+                    continue
+                if status == "approved":
+                    print("[Pairing] Approved — device logged in.", flush=True)
+                    return result["access_token"]
+                raise RuntimeError(f"Unexpected pairing status: {status}")
 
-    raise RuntimeError("Pairing session expired before approval")
+            print("[Pairing] Deadline reached — requesting a new QR...", flush=True)
 
 
 async def ensure_edge_token() -> str:
