@@ -12,7 +12,7 @@ class TTSService:
 
     def __init__(self):
         self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-        self.model = os.getenv("OPENAI_TTS_MODEL", "tts-1")
+        self.model = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
         self.voice = os.getenv(
             "OPENAI_VOICE_MODEL", "alloy"
         )  # alloy, echo, fable, onyx, nova, shimmer
