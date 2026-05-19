@@ -288,6 +288,20 @@ async def call_end(
     return {"status": "ok"}
 
 
+@app.post("/api/fraud/answer-call")
+async def answer_call(
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """User answered the call."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    async with sessions_lock:
+        session = active_sessions.get(x_user_id)
+    if session:
+        await session.on_user_answer_call()
+    return {"status": "ok"}
+
+
 @app.get("/api/fraud/conversations")
 async def get_conversations(
     x_user_id: str | None = Header(None, alias="X-User-Id"),
