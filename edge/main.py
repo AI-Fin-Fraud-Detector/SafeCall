@@ -329,12 +329,18 @@ class EdgeClient:
                         break
                         
                     elif event_type == "direct_call":
-                        caller_phone = status.get("caller_phone", "Unknown")
-                        print(f"\n[CALL] Preparing direct call with {caller_phone}", flush=True)
-                        self.mic_active = True
+                        caller_phone = status.get("caller_phone", "")
+                        if self.mic_active:
+                            # User answered mid-call: stop AI playback immediately and hand off
+                            print(f"\n[CALL] User answered — stopping AI playback", flush=True)
+                            self.ai_playing = False
+                            self.playback_stop_event.set()
+                        else:
+                            # Fraud detection disabled: call just started, activate mic for WebRTC
+                            print(f"\n[CALL] Direct call from {caller_phone} — activating mic", flush=True)
+                            self.mic_active = True
                         self.running = False
-                        # initiate webrtc here with another android
-                        # TODO: Implement webrtc initiation
+                        # TODO: Implement WebRTC handoff to kebbi
 
                     elif event_type == "playback_complete":
                         await self.playback_queue.put(None)
