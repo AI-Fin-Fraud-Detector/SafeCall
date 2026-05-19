@@ -96,8 +96,13 @@ class _Session:
             ]
 
         if not self.messages:
-            sys_id = await self._save_message("system", SYSTEM_PROMPT)
-            self.messages = [{"id": sys_id, "role": "system", "content": SYSTEM_PROMPT}]
+            user_info = await self._get_user_info()
+            formatted_prompt = SYSTEM_PROMPT.format(
+                user_name=user_info.get("name", "User"),
+                user_phone=user_info.get("phone_number", "unknown"),
+            )
+            sys_id = await self._save_message("system", formatted_prompt)
+            self.messages = [{"id": sys_id, "role": "system", "content": formatted_prompt}]
 
         self.call_active.set()
         await self.response_queue.put(
@@ -133,6 +138,22 @@ class _Session:
         print(f"[SESSION] {event_type} → user={self.user_uuid}", flush=True)
 
     # ─── DB helpers ─────────────────────────────────────────────────────────
+
+    async def _get_user_info(self) -> dict:
+        """Fetch user name and phone number from database."""
+        if not self.db_pool:
+            return {}
+        try:
+            async with self.db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT name, phone_number FROM users WHERE uuid = $1",
+                    uuid.UUID(self.user_uuid),
+                )
+                if row:
+                    return {"name": row["name"], "phone_number": row["phone_number"]}
+        except Exception as e:
+            print(f"[ERROR] Failed to fetch user info: {e}", flush=True)
+        return {}
 
     async def _save_message(self, role: str, content: str) -> uuid.UUID | None:
         if not self.conversation_id or not self.db_pool:
