@@ -4,6 +4,7 @@ import time
 import uuid
 from typing import Literal
 
+import httpx
 import numpy as np
 from google.protobuf.struct_pb2 import Struct
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from .const import (
     INFERENCES_PER_TRIGGER,
     SSCI_SCAM_THRESHOLD,
     FLIP_EMA_ALPHA,
+    SSCI_MAX_DURATION_SECONDS,
     SSCI_SCAM_GRACE_SECONDS,
     SSCI_SCAM_WAIT_SECONDS,
     SSCI_SAFE_WAIT_SECONDS,
@@ -92,6 +94,7 @@ class _Session:
         self.ssci_action_started: bool = False
         self.ssci_action_task: asyncio.Task | None = None
         self.detection_task: asyncio.Task | None = None
+        self.call_started_at: float | None = None
         # Ordered list of completed SSCI snapshots: {trigger_index, message_id, ssci}
         self.ssci_snapshots: list[dict] = []
 
@@ -124,6 +127,7 @@ class _Session:
             sys_id = await self._save_message("system", formatted_prompt)
             self.messages = [{"id": sys_id, "role": "system", "content": formatted_prompt}]
 
+        self.call_started_at = time.monotonic()
         self.call_active.set()
         await self.response_queue.put(
             voice_pb2.ServerMessage(
@@ -424,9 +428,9 @@ class _Session:
     async def _call_fraud_detection_api(self, conversation_text: str) -> bool | None:
         if not conversation_text:
             return None
-        import os
         fraud_api_url = os.getenv("FRAUD_DETECTION_API_URL", "")
         if not fraud_api_url:
+            print("[FRAUD] No API URL configured, skipping detection", flush=True)
             return None
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -510,7 +514,8 @@ class _Session:
                         )
                     )
 
-            if is_trigger and not self.ssci_action_started and ssci:
+            call_age = time.monotonic() - self.call_started_at if self.call_started_at else 0
+            if is_trigger and not self.ssci_action_started and ssci and call_age >= SSCI_MAX_DURATION_SECONDS:
                 self.ssci_action_started = True
                 scam_prob = ssci.get("scam_probability", 0.5)
                 if scam_prob > SSCI_SCAM_THRESHOLD:
