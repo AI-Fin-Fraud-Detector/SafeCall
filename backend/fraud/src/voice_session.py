@@ -160,7 +160,13 @@ class _Session:
         if self.recorder:
             await asyncio.to_thread(self.recorder.stop)
             await asyncio.to_thread(self.recorder.shutdown)
-            await asyncio.to_thread(self._initialize_stt)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            # await asyncio.to_thread(self._initialize_stt)
         print(f"[SESSION] {event_type} → user={self.user_uuid}", flush=True)
 
     # ─── DB helpers ─────────────────────────────────────────────────────────
@@ -907,3 +913,9 @@ class _Session:
                 self.recorder = None
             except Exception:
                 pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass

@@ -268,12 +268,11 @@ async def direct_call(
 
 @app.post("/api/fraud/call-end")
 async def call_end(
-    body: CallEventRequest,
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
     """Call has ended; edge should stop."""
     async with sessions_lock:
-        session = active_sessions.get(body.callee_user_id)
+        session = active_sessions.get(x_user_id)
     if session:
         await session.on_call_end("call_end")
     await send_push(
