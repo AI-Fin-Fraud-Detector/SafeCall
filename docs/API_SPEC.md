@@ -499,6 +499,7 @@ Register an incoming phone call. Creates a conversation and optionally triggers 
 | Field | Type | Description |
 |---|---|---|
 | `phone_number` | string | Caller's phone number |
+| `caller_name` | string \| null | Caller's name (optional) |
 
 **Response `200` (fraud detection enabled)**
 
@@ -508,6 +509,8 @@ Register an incoming phone call. Creates a conversation and optionally triggers 
   "fraud_detection": "enabled"
 }
 ```
+
+A `fraud_alert` or `safe_to_answer` push is sent to `host_mobile` once SSCI computation completes (after 3 inferences, minimum 60s into call).
 
 **Response `200` (fraud detection disabled)**
 
@@ -519,30 +522,34 @@ Register an incoming phone call. Creates a conversation and optionally triggers 
 }
 ```
 
-A push notification is sent to the callee's Kebbi device in both cases. The enabled variant includes `conversation_id` in the notification payload.
+A `direct_call` gRPC status is sent to the edge device; no SSCI computation occurs.
 
 **Errors**
 
 | Status | Detail |
 |---|---|
+| `400` | `Missing X-User-Id header`
+|---|---|
 
 ---
 
-### POST /api/fraud/direct-call
+### POST /api/fraud/answer-call
 
-Callee manually answered the call; edge should stop handling it.
+User answered the call; stops LLM/TTS and hands off to edge for WebRTC.
 
-**Request body** (`application/json`)
-
-| Field | Type | Description |
-|---|---|---|
-| `callee_user_id` | string | UUID of the user who answered |
+Cancels the SSCI action timer (if running) and sends a `direct_call` gRPC status to the edge device.
 
 **Response `200`**
 
 ```json
 { "status": "ok" }
 ```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `Missing X-User-Id header` |
 
 ---
 
@@ -554,13 +561,19 @@ Call has ended; edge device should stop the session.
 
 | Field | Type | Description |
 |---|---|---|
-| `callee_user_id` | string | UUID of the user whose call ended |
+| (none) | — | Uses `X-User-Id` from headers |
 
 **Response `200`**
 
 ```json
 { "status": "ok" }
 ```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `Missing X-User-Id header` |
 
 ---
 
@@ -716,6 +729,184 @@ Get a single message by ID.
 | `400` | `Invalid conversation_id or message_id` |
 | `404` | `Message not found` |
 | `503` | `Database unavailable` |
+
+---
+
+## Message Metadata Schema
+
+Messages include a `metadata` field (JSONB) with fraud detection results. This field is populated during conversation flow:
+
+### Non-trigger inference (every message):
+```json
+{
+  "detection": {
+    "prediction": true,
+    "inference_index": 2
+  }
+}
+```
+
+### Trigger inference (every 3rd inference):
+```json
+{
+  "detection": {
+    "prediction": false,
+    "inference_index": 3,
+    "ssci": {
+      "trigger_index": 1,
+      "confidence": 0.9134559,
+      "scam_probability": 0.0865441,
+      "evidence": 0.67,
+      "agreement": 0.89,
+      "stability": 0.98
+    }
+  }
+}
+```
+
+### SSCI Scoring
+
+- **evidence** — proportion of trigger inferences predicting scam (0.0 = all safe, 1.0 = all scam)
+- **agreement** — consistency of predictions (1.0 = unanimous, lower = disagreement)
+- **stability** — inverse of flip count EMA; how stable predictions are over time
+- **scam_probability** — `evidence*0.5 + agreement*0.3 + stability*0.2`
+- **confidence** — `1.0 - scam_probability`
+
+Trigger fires every 3 inferences (`INFERENCES_PER_TRIGGER`), but SSCI action (alert/safe-to-answer) only fires **once per call**, after minimum call age ≥ 60s (`SSCI_MAX_DURATION_SECONDS`).
+
+---
+
+## Push Notification Payloads
+
+Fraud service sends the following push notification types to `host_mobile`:
+
+### ssci_update
+
+Sent whenever SSCI is computed (trigger boundary).
+
+```json
+{
+  "silent": true,
+  "data": {
+    "type": "ssci_update",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "message_id": "660e8400-e29b-41d4-a716-446655440000",
+    "ssci": { "trigger_index": 1, "scam_probability": 0.15, ... }
+  }
+}
+```
+
+### fraud_alert
+
+Sent once per call when `scam_probability > 0.6`. App should alert user and encourage them to hang up. LLM continues naturally for 30 seconds (grace period), then stops. Call auto-ends after 90 total seconds if user doesn't answer.
+
+```json
+{
+  "silent": true,
+  "android_priority": "high",
+  "data": {
+    "type": "fraud_alert",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "scam_probability": 0.75,
+    "ssci": { "trigger_index": 1, ... }
+  }
+}
+```
+
+### safe_to_answer
+
+Sent once per call when `scam_probability < 0.6`. App should suggest user answer the call. LLM continues for 180 seconds (3 min). Call auto-ends if user doesn't answer.
+
+```json
+{
+  "silent": false,
+  "android_priority": "high",
+  "data": {
+    "type": "safe_to_answer",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "scam_probability": 0.20,
+    "ssci": { "trigger_index": 1, ... }
+  }
+}
+```
+
+### call_new_message
+
+Sent when a new message is added to the conversation.
+
+```json
+{
+  "silent": true,
+  "data": {
+    "type": "call_new_message",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "message": {
+      "id": "660e8400-e29b-41d4-a716-446655440000",
+      "role": "user",
+      "content": "Hello?",
+      "metadata": {}
+    }
+  }
+}
+```
+
+### call_update_message
+
+Sent when a message's content or metadata is updated (e.g., SSCI score added).
+
+```json
+{
+  "silent": true,
+  "data": {
+    "type": "call_update_message",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "message": { "id": "660e8400-..." }
+  }
+}
+```
+
+---
+
+### GET /health
+
+Health check endpoint. Returns service status and component health.
+
+**Response `200`**
+
+```json
+{
+  "status": "healthy",
+  "service": "anti-fraud",
+  "components": {
+    "redis": "healthy",
+    "grpc": "listening on :60015",
+    "active_sessions": 2
+  }
+}
+```
+
+---
+
+## gRPC Streaming (Internal)
+
+Edge devices maintain a bidirectional gRPC stream on port 60015 via `VoiceService.Session()`.
+
+**Client → Server (edge sends):**
+- `audio_chunk` — raw audio bytes from microphone (16-bit PCM, 16kHz mono)
+- `interrupt` — VAD detected speech during playback; stop TTS immediately
+
+**Server → Client (fraud service sends):**
+- `audio_response` — TTS audio to play (16-bit PCM, 16kHz mono), chunked
+- `text_status` — call lifecycle and metadata events:
+  - `incoming_call` — incoming phone call metadata (caller_phone, caller_name)
+  - `direct_call` — user answered; hand off to WebRTC
+  - `call_end` — call ended; close session
+  - `stt_result` — transcribed user speech (interim or final)
+  - `llm_response` — LLM response text
+  - `playback_complete` — final audio chunk sent, clear queue
+
+Metadata sent via headers:
+- `authorization` — edge device access token (Bearer)
 
 ---
 

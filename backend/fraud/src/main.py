@@ -253,19 +253,6 @@ async def incoming_call(
         return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
 
 
-@app.post("/api/fraud/direct-call")
-async def direct_call(
-    body: CallEventRequest,
-    x_user_id: str | None = Header(None, alias="X-User-Id"),
-):
-    """Callee manually answered the call; edge should stop handling it."""
-    async with sessions_lock:
-        session = active_sessions.get(body.callee_user_id)
-    if session:
-        await session.on_call_end("direct_call")
-    return {"status": "ok"}
-
-
 @app.post("/api/fraud/call-end")
 async def call_end(
     x_user_id: str | None = Header(None, alias="X-User-Id"),

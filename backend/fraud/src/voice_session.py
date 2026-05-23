@@ -618,6 +618,15 @@ class _Session:
             voice_pb2.ServerMessage(text_status=make_status("direct_call"))
         )
         print(f"[SSCI] User answered call: user={self.user_uuid}", flush=True)
+        if self.recorder:
+            await asyncio.to_thread(self.recorder.stop)
+            await asyncio.to_thread(self.recorder.shutdown)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     # ─── LLM + TTS ───────────────────────────────────────────────────────────
 
