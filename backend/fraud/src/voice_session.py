@@ -516,7 +516,7 @@ class _Session:
                                     "ssci": ssci,
                                 },
                             ),
-                            app="host_mobile",
+                            app="kebbi",
                         )
                     )
 
@@ -553,7 +553,7 @@ class _Session:
                         "conversation_id": self.conversation_id,
                     },
                 ),
-                app="host_mobile",
+                app="kebbi",
             )
             await asyncio.sleep(SSCI_SCAM_GRACE_SECONDS)
             self._cancel_current_task()
@@ -581,7 +581,7 @@ class _Session:
                         "conversation_id": self.conversation_id,
                     },
                 ),
-                app="host_mobile",
+                app="kebbi",
             )
             await asyncio.sleep(SSCI_SAFE_WAIT_SECONDS)
             if self.call_active.is_set():
@@ -729,7 +729,7 @@ class _Session:
                             send_push(
                                 target_user_id=uuid.UUID(self.user_uuid),
                                 payload=NotificationPayload(silent=True, data=data),
-                                app="host_mobile",
+                                app="kebbi",
                             )
                         )
 

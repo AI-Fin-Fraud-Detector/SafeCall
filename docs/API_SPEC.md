@@ -778,9 +778,11 @@ Trigger fires every 3 inferences (`INFERENCES_PER_TRIGGER`), but SSCI action (al
 
 ## Push Notification Payloads
 
-Fraud service sends the following push notification types to `host_mobile`:
+Fraud service sends the following push notification types:
 
 ### ssci_update
+
+**Target:** `kebbi`
 
 Sent whenever SSCI is computed (trigger boundary).
 
@@ -798,7 +800,9 @@ Sent whenever SSCI is computed (trigger boundary).
 
 ### fraud_alert
 
-Sent once per call when `scam_probability > 0.6`. App should alert user and encourage them to hang up. LLM continues naturally for 30 seconds (grace period), then stops. Call auto-ends after 90 total seconds if user doesn't answer.
+**Target:** `kebbi`
+
+Sent once per call when `scam_probability > 0.6`. Should alert user and encourage them to hang up. LLM continues naturally for 30 seconds (grace period), then stops. Call auto-ends after 90 total seconds if user doesn't answer.
 
 ```json
 {
@@ -815,7 +819,9 @@ Sent once per call when `scam_probability > 0.6`. App should alert user and enco
 
 ### safe_to_answer
 
-Sent once per call when `scam_probability < 0.6`. App should suggest user answer the call. LLM continues for 180 seconds (3 min). Call auto-ends if user doesn't answer.
+**Target:** `kebbi`
+
+Sent once per call when `scam_probability < 0.6`. Should suggest user answer the call. LLM continues for 180 seconds (3 min). Call auto-ends if user doesn't answer.
 
 ```json
 {
@@ -831,6 +837,8 @@ Sent once per call when `scam_probability < 0.6`. App should suggest user answer
 ```
 
 ### call_new_message
+
+**Target:** `kebbi`
 
 Sent when a new message is added to the conversation.
 
@@ -852,6 +860,8 @@ Sent when a new message is added to the conversation.
 
 ### call_update_message
 
+**Target:** `kebbi`
+
 Sent when a message's content or metadata is updated (e.g., SSCI score added).
 
 ```json
@@ -861,6 +871,39 @@ Sent when a message's content or metadata is updated (e.g., SSCI score added).
     "type": "call_update_message",
     "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
     "message": { "id": "660e8400-..." }
+  }
+}
+```
+
+### call_delete_message
+
+**Target:** `kebbi`
+
+Sent when a message is deleted (e.g., when appending updates delete stale messages).
+
+```json
+{
+  "silent": true,
+  "data": {
+    "type": "call_delete_message",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "message": { "id": "660e8400-..." }
+  }
+}
+```
+
+### hangup (call_end)
+
+**Target:** `host_mobile` (user's mobile app)
+
+Sent when call ends due to SSCI timeout or manual hangup.
+
+```json
+{
+  "silent": true,
+  "android_priority": "high",
+  "data": {
+    "action": "hangup"
   }
 }
 ```
