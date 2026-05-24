@@ -253,27 +253,13 @@ async def incoming_call(
         return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
 
 
-@app.post("/api/fraud/direct-call")
-async def direct_call(
-    body: CallEventRequest,
-    x_user_id: str | None = Header(None, alias="X-User-Id"),
-):
-    """Callee manually answered the call; edge should stop handling it."""
-    async with sessions_lock:
-        session = active_sessions.get(body.callee_user_id)
-    if session:
-        await session.on_call_end("direct_call")
-    return {"status": "ok"}
-
-
 @app.post("/api/fraud/call-end")
 async def call_end(
-    body: CallEventRequest,
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
     """Call has ended; edge should stop."""
     async with sessions_lock:
-        session = active_sessions.get(body.callee_user_id)
+        session = active_sessions.get(x_user_id)
     if session:
         await session.on_call_end("call_end")
     await send_push(
@@ -285,6 +271,20 @@ async def call_end(
         ),
         app="host_mobile",
     )
+    return {"status": "ok"}
+
+
+@app.post("/api/fraud/answer-call")
+async def answer_call(
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """User answered the call."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    async with sessions_lock:
+        session = active_sessions.get(x_user_id)
+    if session:
+        await session.on_user_answer_call()
     return {"status": "ok"}
 
 
