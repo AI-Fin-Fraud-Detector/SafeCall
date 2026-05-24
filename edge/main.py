@@ -329,12 +329,18 @@ class EdgeClient:
                         break
                         
                     elif event_type == "direct_call":
-                        caller_phone = status.get("caller_phone", "Unknown")
-                        print(f"\n[CALL] Preparing direct call with {caller_phone}", flush=True)
-                        self.mic_active = True
+                        caller_phone = status.get("caller_phone", "")
+                        if self.mic_active:
+                            # User answered mid-call: stop AI playback immediately and hand off
+                            print(f"\n[CALL] User answered — stopping AI playback", flush=True)
+                            self.ai_playing = False
+                            self.playback_stop_event.set()
+                        else:
+                            # Fraud detection disabled: call just started, activate mic for WebRTC
+                            print(f"\n[CALL] Direct call from {caller_phone} — activating mic", flush=True)
+                            self.mic_active = True
                         self.running = False
-                        # initiate webrtc here with another android
-                        # TODO: Implement webrtc initiation
+                        # TODO: Implement WebRTC handoff to kebbi
 
                     elif event_type == "playback_complete":
                         await self.playback_queue.put(None)
@@ -360,30 +366,44 @@ class EdgeClient:
     async def run(self):
         self.loop = asyncio.get_running_loop()
         await self.connect()
-        self.load_vad()
 
-        print("Starting microphone stream (waiting for incoming call)...", flush=True)
-        self.mic_stream = sd.InputStream(
-            samplerate=SAMPLE_RATE,
-            channels=CHANNELS,
-            dtype=DTYPE,
-            callback=self.audio_callback,
-            blocksize=CHUNK_SIZE
-        )
-        self.mic_stream.start()
+        while True:
+            # Reset per-call state
+            self.running = True
+            self.mic_active = False
+            self.ai_playing = False
+            self.interrupt_pending = False
+            self.playback_stop_event.clear()
+            for q in (self.interrupt_queue, self.audio_input_queue, self.playback_queue):
+                while not q.empty():
+                    try:
+                        q.get_nowait()
+                    except Exception:
+                        break
 
-        try:
-            metadata = [("authorization", self.token)]
-            response_iterator = self.stub.Session(self.request_generator(), metadata=metadata)
-            await self.response_handler(response_iterator)
-        except Exception as e:
-            print(f"\n[Session Error] {e}", flush=True)
-        finally:
-            self.running = False
-            if self.mic_stream:
-                self.mic_stream.stop()
-                self.mic_stream.close()
-            await self.close()
+            self.load_vad()
+            print("\n[Edge] Waiting for incoming call...\n", flush=True)
+            self.mic_stream = sd.InputStream(
+                samplerate=SAMPLE_RATE,
+                channels=CHANNELS,
+                dtype=DTYPE,
+                callback=self.audio_callback,
+                blocksize=CHUNK_SIZE
+            )
+            self.mic_stream.start()
+
+            try:
+                metadata = [("authorization", self.token)]
+                response_iterator = self.stub.Session(self.request_generator(), metadata=metadata)
+                await self.response_handler(response_iterator)
+            except Exception as e:
+                print(f"\n[Session Error] {e}", flush=True)
+                await asyncio.sleep(2)
+            finally:
+                if self.mic_stream:
+                    self.mic_stream.stop()
+                    self.mic_stream.close()
+                    self.mic_stream = None
 
 
 async def main():
@@ -396,7 +416,7 @@ async def main():
     client = EdgeClient(token=token)
     try:
         await client.run()
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, asyncio.CancelledError):
         print("\nShutting down...", flush=True)
     finally:
         await client.close()

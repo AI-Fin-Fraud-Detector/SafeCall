@@ -4,6 +4,7 @@ import time
 import uuid
 from typing import Literal
 
+import httpx
 import numpy as np
 from google.protobuf.struct_pb2 import Struct
 from pydantic import BaseModel
@@ -15,7 +16,15 @@ from .const import (
     MAX_TOKENS,
     TEMPERATURE,
     TOP_P,
+    INFERENCES_PER_TRIGGER,
+    SSCI_SCAM_THRESHOLD,
+    FLIP_EMA_ALPHA,
+    SSCI_MAX_DURATION_SECONDS,
+    SSCI_SCAM_GRACE_SECONDS,
+    SSCI_SCAM_WAIT_SECONDS,
+    SSCI_SAFE_WAIT_SECONDS,
 )
+from .ssci import compute_ssci, update_flip_ema
 from .notifications import NotificationPayload, send_push
 from .protos import voice_pb2
 
@@ -75,6 +84,20 @@ class _Session:
         # call_ended signals the session loop to close
         self.call_ended = asyncio.Event()
 
+        # SSCI state
+        self.raw_results: list[bool] = []
+        self.trigger_results: list[bool] = []
+        self.inference_index: int = 0
+        self.trigger_index: int = 0
+        self.flip_ema: float = 0.0
+        self.last_prediction: bool | None = None
+        self.ssci_action_started: bool = False
+        self.ssci_action_task: asyncio.Task | None = None
+        self.detection_task: asyncio.Task | None = None
+        self.call_started_at: float | None = None
+        # Ordered list of completed SSCI snapshots: {trigger_index, message_id, ssci}
+        self.ssci_snapshots: list[dict] = []
+
     # ─── Call lifecycle ──────────────────────────────────────────────────────
 
     async def on_incoming_call(
@@ -96,9 +119,15 @@ class _Session:
             ]
 
         if not self.messages:
-            sys_id = await self._save_message("system", SYSTEM_PROMPT)
-            self.messages = [{"id": sys_id, "role": "system", "content": SYSTEM_PROMPT}]
+            user_info = await self._get_user_info()
+            formatted_prompt = SYSTEM_PROMPT.format(
+                user_name=user_info.get("name", "User"),
+                user_phone=user_info.get("phone_number", "unknown"),
+            )
+            sys_id = await self._save_message("system", formatted_prompt)
+            self.messages = [{"id": sys_id, "role": "system", "content": formatted_prompt}]
 
+        self.call_started_at = time.monotonic()
         self.call_active.set()
         await self.response_queue.put(
             voice_pb2.ServerMessage(
@@ -123,34 +152,78 @@ class _Session:
     async def on_call_end(self, event_type: str):
         self.call_active.clear()
         self._cancel_current_task()
+        if self.ssci_action_task and not self.ssci_action_task.done():
+            self.ssci_action_task.cancel()
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status(event_type))
         )
         if self.recorder:
             await asyncio.to_thread(self.recorder.stop)
             await asyncio.to_thread(self.recorder.shutdown)
-            await asyncio.to_thread(self._initialize_stt)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+            # await asyncio.to_thread(self._initialize_stt)
         print(f"[SESSION] {event_type} → user={self.user_uuid}", flush=True)
 
     # ─── DB helpers ─────────────────────────────────────────────────────────
 
-    async def _save_message(self, role: str, content: str) -> uuid.UUID | None:
+    async def _get_user_info(self) -> dict:
+        """Fetch user name and phone number from database."""
+        if not self.db_pool:
+            return {}
+        try:
+            async with self.db_pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT name, phone_number FROM users WHERE uuid = $1",
+                    uuid.UUID(self.user_uuid),
+                )
+                if row:
+                    return {"name": row["name"], "phone_number": row["phone_number"]}
+        except Exception as e:
+            print(f"[ERROR] Failed to fetch user info: {e}", flush=True)
+        return {}
+
+    async def _save_message(self, role: str, content: str, metadata: dict | None = None) -> uuid.UUID | None:
         if not self.conversation_id or not self.db_pool:
             return None
         msg_id = uuid.uuid4()
         async with self.db_pool.acquire() as conn:
             await conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content) VALUES ($1, $2, $3, $4)",
+                "INSERT INTO messages (id, conversation_id, role, content, metadata) VALUES ($1, $2, $3, $4, $5)",
                 msg_id,
                 uuid.UUID(self.conversation_id),
                 role,
                 content,
+                metadata or {},
             )
             await conn.execute(
                 "UPDATE conversations SET updated_at = NOW() WHERE id = $1",
                 uuid.UUID(self.conversation_id),
             )
         return msg_id
+
+    async def _update_message_metadata(self, msg_id: uuid.UUID, metadata: dict) -> None:
+        if not self.conversation_id or not self.db_pool:
+            return
+        async with self.db_pool.acquire() as conn:
+            await conn.execute(
+                "UPDATE messages SET metadata = $1 WHERE id = $2",
+                metadata,
+                msg_id,
+            )
+        if self.user_uuid and self.conversation_id:
+            asyncio.create_task(
+                self._push_message(
+                    user_id=uuid.UUID(self.user_uuid),
+                    conversation_id=uuid.UUID(self.conversation_id),
+                    message_content=MessageContent(id=msg_id),
+                    msg_type="call_update_message",
+                )
+            )
 
     async def _push_message(
         self,
@@ -338,6 +411,223 @@ class _Session:
         except Exception as e:
             print(f"[STT] Loop error: {e}", flush=True)
 
+    # ─── Fraud Detection ────────────────────────────────────────────────────
+
+    async def _format_conversation_for_detection(self) -> str:
+        if not self.db_pool or not self.conversation_id:
+            return ""
+        try:
+            async with self.db_pool.acquire() as conn:
+                rows = await conn.fetch(
+                    "SELECT role, content FROM messages WHERE conversation_id = $1 AND role IN ('user', 'assistant') ORDER BY created_at ASC",
+                    uuid.UUID(self.conversation_id),
+                )
+                parts = []
+                for row in rows:
+                    label = "caller" if row["role"] == "user" else "receiver"
+                    parts.append(f"{label}: {row['content'].strip()}")
+                return " ".join(parts)
+        except Exception as e:
+            print(f"[FRAUD] format_conversation error: {e}", flush=True)
+        return ""
+
+    async def _call_fraud_detection_api(self, conversation_text: str) -> bool | None:
+        if not conversation_text:
+            return None
+        fraud_api_url = os.getenv("FRAUD_DETECTION_API_URL", "")
+        if not fraud_api_url:
+            print("[FRAUD] No API URL configured, skipping detection", flush=True)
+            return None
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    fraud_api_url,
+                    json={"text": conversation_text},
+                    headers={"Content-Type": "application/json"},
+                )
+                if resp.status_code == 200:
+                    text = resp.text.strip().lower()
+                    if text == "true":
+                        return True
+                    if text == "false":
+                        return False
+        except Exception as e:
+            print(f"[FRAUD] API call error: {e}", flush=True)
+        return None
+
+    async def _run_fraud_detection(self):
+        try:
+            conversation_text = await self._format_conversation_for_detection()
+            prediction = await self._call_fraud_detection_api(conversation_text)
+            if prediction is None:
+                return
+
+            self.raw_results.append(prediction)
+            self.inference_index += 1
+
+            if self.last_prediction is not None:
+                self.flip_ema = update_flip_ema(self.flip_ema, self.last_prediction, prediction, FLIP_EMA_ALPHA)
+            self.last_prediction = prediction
+
+            is_trigger = (self.inference_index % INFERENCES_PER_TRIGGER) == 0
+
+            detection_metadata = {
+                "detection": {
+                    "prediction": prediction,
+                    "inference_index": self.inference_index,
+                }
+            }
+
+            ssci = None
+            if is_trigger:
+                self.trigger_results.append(prediction)
+                self.trigger_index += 1
+                ssci = compute_ssci(self.trigger_results, self.flip_ema)
+                if ssci:
+                    ssci["trigger_index"] = self.trigger_index
+                    detection_metadata["detection"]["ssci"] = ssci
+
+            last_user_msg_id = None
+            for msg in reversed(self.messages):
+                if msg.get("role") == "user" and msg.get("id"):
+                    last_user_msg_id = msg["id"]
+                    break
+
+            if last_user_msg_id:
+                await self._update_message_metadata(last_user_msg_id, detection_metadata)
+
+            if is_trigger and ssci and last_user_msg_id:
+                snapshot = {
+                    "trigger_index": self.trigger_index,
+                    "message_id": str(last_user_msg_id),
+                    "ssci": ssci,
+                }
+                self.ssci_snapshots.append(snapshot)
+                if self.user_uuid and self.conversation_id:
+                    asyncio.create_task(
+                        send_push(
+                            target_user_id=uuid.UUID(self.user_uuid),
+                            payload=NotificationPayload(
+                                silent=True,
+                                data={
+                                    "type": "ssci_update",
+                                    "conversation_id": self.conversation_id,
+                                    "message_id": str(last_user_msg_id),
+                                    "ssci": ssci,
+                                },
+                            ),
+                            app="kebbi",
+                        )
+                    )
+
+            call_age = time.monotonic() - self.call_started_at if self.call_started_at else 0
+            if is_trigger and not self.ssci_action_started and ssci and call_age >= SSCI_MAX_DURATION_SECONDS:
+                self.ssci_action_started = True
+                scam_prob = ssci.get("scam_probability", 0.5)
+                if scam_prob > SSCI_SCAM_THRESHOLD:
+                    self.ssci_action_task = asyncio.create_task(
+                        self._handle_scam_detected(scam_prob, ssci)
+                    )
+                else:
+                    self.ssci_action_task = asyncio.create_task(
+                        self._handle_safe_to_answer(scam_prob, ssci)
+                    )
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[FRAUD] Detection error: {e}", flush=True)
+
+    async def _handle_scam_detected(self, scam_prob: float, ssci: dict):
+        try:
+            print(f"[SSCI] Scam detected (prob={scam_prob:.4f}) for user={self.user_uuid}", flush=True)
+            await send_push(
+                target_user_id=uuid.UUID(self.user_uuid),
+                payload=NotificationPayload(
+                    silent=True,
+                    android_priority="high",
+                    data={
+                        "type": "fraud_alert",
+                        "scam_probability": scam_prob,
+                        "ssci": ssci,
+                        "conversation_id": self.conversation_id,
+                    },
+                ),
+                app="kebbi",
+            )
+            await asyncio.sleep(SSCI_SCAM_GRACE_SECONDS)
+            self._cancel_current_task()
+            await asyncio.sleep(SSCI_SCAM_WAIT_SECONDS - SSCI_SCAM_GRACE_SECONDS)
+            if self.call_active.is_set():
+                print(f"[SSCI] No user action in {SSCI_SCAM_WAIT_SECONDS}s, ending call: user={self.user_uuid}", flush=True)
+                await self._end_call_due_to_ssci()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[SSCI] _handle_scam_detected error: {e}", flush=True)
+
+    async def _handle_safe_to_answer(self, scam_prob: float, ssci: dict):
+        try:
+            print(f"[SSCI] Safe to answer (prob={scam_prob:.4f}) for user={self.user_uuid}", flush=True)
+            await send_push(
+                target_user_id=uuid.UUID(self.user_uuid),
+                payload=NotificationPayload(
+                    silent=False,
+                    android_priority="high",
+                    data={
+                        "type": "safe_to_answer",
+                        "scam_probability": scam_prob,
+                        "ssci": ssci,
+                        "conversation_id": self.conversation_id,
+                    },
+                ),
+                app="kebbi",
+            )
+            await asyncio.sleep(SSCI_SAFE_WAIT_SECONDS)
+            if self.call_active.is_set():
+                print(f"[SSCI] No user answer in {SSCI_SAFE_WAIT_SECONDS}s, ending call: user={self.user_uuid}", flush=True)
+                await self._end_call_due_to_ssci()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[SSCI] _handle_safe_to_answer error: {e}", flush=True)
+
+    async def _end_call_due_to_ssci(self):
+        self.call_active.clear()
+        self._cancel_current_task()
+        await self.response_queue.put(
+            voice_pb2.ServerMessage(text_status=make_status("call_end"))
+        )
+        await send_push(
+            target_user_id=uuid.UUID(self.user_uuid),
+            payload=NotificationPayload(
+                silent=True,
+                android_priority="high",
+                data={"action": "hangup"},
+            ),
+            app="host_mobile",
+        )
+        self.call_ended.set()
+
+    async def on_user_answer_call(self):
+        if self.ssci_action_task and not self.ssci_action_task.done():
+            self.ssci_action_task.cancel()
+        self._cancel_current_task()
+        self.call_active.clear()
+        await self.response_queue.put(
+            voice_pb2.ServerMessage(text_status=make_status("direct_call"))
+        )
+        print(f"[SSCI] User answered call: user={self.user_uuid}", flush=True)
+        if self.recorder:
+            await asyncio.to_thread(self.recorder.stop)
+            await asyncio.to_thread(self.recorder.shutdown)
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
+
     # ─── LLM + TTS ───────────────────────────────────────────────────────────
 
     async def _process_and_respond(self, text: str, is_append: bool = False):
@@ -378,6 +668,10 @@ class _Session:
                 )
             )
 
+            if self.detection_task and not self.detection_task.done():
+                self.detection_task.cancel()
+            self.detection_task = asyncio.create_task(self._run_fraud_detection())
+
             self.is_generating_tts = True
             await self._stream_tts(client, response_text)
 
@@ -411,6 +705,34 @@ class _Session:
                 del self.messages[last_user_msg_idx + 1 :]
                 self.messages[last_user_msg_idx]["content"] = text
                 old_id = self.messages[last_user_msg_idx].get("id")
+
+                # Cancel any in-flight detection for this message to avoid stale writes
+                if self.detection_task and not self.detection_task.done():
+                    self.detection_task.cancel()
+                    self.detection_task = None
+                    if self.user_uuid and self.conversation_id:
+                        if self.ssci_snapshots:
+                            snap = self.ssci_snapshots[-1]
+                            data = {
+                                "type": "ssci_update",
+                                "conversation_id": self.conversation_id,
+                                "message_id": snap["message_id"],
+                                "ssci": snap["ssci"],
+                            }
+                        else:
+                            data = {
+                                "type": "ssci_update",
+                                "conversation_id": self.conversation_id,
+                                "recomputing": True,
+                            }
+                        asyncio.create_task(
+                            send_push(
+                                target_user_id=uuid.UUID(self.user_uuid),
+                                payload=NotificationPayload(silent=True, data=data),
+                                app="kebbi",
+                            )
+                        )
+
                 if (
                     self.user_uuid
                     and stale_ids
@@ -560,6 +882,9 @@ class _Session:
             print("[DEBUG] Cancelling current AI task", flush=True)
             self.current_task.cancel()
             self.current_task = None
+        if self.detection_task and not self.detection_task.done():
+            self.detection_task.cancel()
+            self.detection_task = None
 
     async def _drain_queue(self):
         kept = []
@@ -597,3 +922,9 @@ class _Session:
                 self.recorder = None
             except Exception:
                 pass
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
