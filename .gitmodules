@@ -1,3 +1,6 @@
 [submodule "host_mobile"]
 	path = host_mobile
 	url = https://github.com/AI-Fin-Fraud-Detector/MyCall
+[submodule "frontend"]
+	path = frontend
+	url = https://github.com/AI-Fin-Fraud-Detector/SafeCall-Frontend
