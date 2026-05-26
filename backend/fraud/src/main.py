@@ -117,6 +117,13 @@ app.add_middleware(
 )
 
 
+# ─── Health Check ─────────────────────────────────────────────────────────────
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+
 # ─── Pydantic models ──────────────────────────────────────────────────────────
 
 
