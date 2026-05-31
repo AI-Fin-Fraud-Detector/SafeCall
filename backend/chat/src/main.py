@@ -91,6 +91,11 @@ app.add_middleware(
 )
 
 
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+
 @app.post("/api/chat/")
 async def chat_message(
     message: UserMessage,

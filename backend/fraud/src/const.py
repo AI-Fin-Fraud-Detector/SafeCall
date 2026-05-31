@@ -4,16 +4,22 @@ TEMPERATURE = 0.8
 TOP_P = 0.95
 
 # ========== SSCI Configuration ==========
+# SSCI (Streaming Scam Confidence Index) Parameters
+# 每次目前判斷約等於 2 句（caller + receiver），所以每 3 次判斷對應 Δn=6。
 INFERENCES_PER_TRIGGER = 3
-SSCI_SCAM_THRESHOLD = 0.6
-FLIP_EMA_ALPHA = 0.3
+SENTENCES_PER_INFERENCE = 2
+DELTA_N = INFERENCES_PER_TRIGGER * SENTENCES_PER_INFERENCE  # = 6
+LAMBDA = 4.0
+TAU = 6.0
+BETA_PRIOR_A = 0.05
+BETA_PRIOR_B = 0.05
+ZETA = 200.0
+ETA = 1.5
+SSCI_SCAM_THRESHOLD = 0.65
 SSCI_MAX_DURATION_SECONDS = 60   # minimum call age before SSCI action can fire
 SSCI_SCAM_GRACE_SECONDS = 30
 SSCI_SCAM_WAIT_SECONDS = 90
 SSCI_SAFE_WAIT_SECONDS = 180
-EVIDENCE_WEIGHT = 0.5
-AGREEMENT_WEIGHT = 0.3
-STABILITY_WEIGHT = 0.2
 
 # ========== ANTI-FRAUD SYSTEM PROMPT (ENGLISH) ==========
 ANTI_FRAUD_SYSTEM_PROMPT = """You are {user_name}, a person who can be reached at phone number {user_phone}.

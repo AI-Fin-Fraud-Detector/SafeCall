@@ -18,13 +18,12 @@ from .const import (
     TOP_P,
     INFERENCES_PER_TRIGGER,
     SSCI_SCAM_THRESHOLD,
-    FLIP_EMA_ALPHA,
     SSCI_MAX_DURATION_SECONDS,
     SSCI_SCAM_GRACE_SECONDS,
     SSCI_SCAM_WAIT_SECONDS,
     SSCI_SAFE_WAIT_SECONDS,
 )
-from .ssci import compute_ssci, update_flip_ema
+from .ssci import compute_ssci, extract_trigger_results
 from .notifications import NotificationPayload, send_push
 from .protos import voice_pb2
 
@@ -86,10 +85,8 @@ class _Session:
 
         # SSCI state
         self.raw_results: list[bool] = []
-        self.trigger_results: list[bool] = []
         self.inference_index: int = 0
         self.trigger_index: int = 0
-        self.flip_ema: float = 0.0
         self.last_prediction: bool | None = None
         self.ssci_action_started: bool = False
         self.ssci_action_task: asyncio.Task | None = None
@@ -464,9 +461,6 @@ class _Session:
 
             self.raw_results.append(prediction)
             self.inference_index += 1
-
-            if self.last_prediction is not None:
-                self.flip_ema = update_flip_ema(self.flip_ema, self.last_prediction, prediction, FLIP_EMA_ALPHA)
             self.last_prediction = prediction
 
             is_trigger = (self.inference_index % INFERENCES_PER_TRIGGER) == 0
@@ -480,11 +474,10 @@ class _Session:
 
             ssci = None
             if is_trigger:
-                self.trigger_results.append(prediction)
-                self.trigger_index += 1
-                ssci = compute_ssci(self.trigger_results, self.flip_ema)
+                trigger_results = extract_trigger_results(self.raw_results)
+                self.trigger_index = len(trigger_results)
+                ssci = compute_ssci(trigger_results)
                 if ssci:
-                    ssci["trigger_index"] = self.trigger_index
                     detection_metadata["detection"]["ssci"] = ssci
 
             last_user_msg_id = None

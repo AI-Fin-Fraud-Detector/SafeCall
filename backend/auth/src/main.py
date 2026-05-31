@@ -130,6 +130,12 @@ app.add_middleware(
 )
 
 
+# --- Health Check Endpoint ---
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
+
+
 # --- Utility Functions ---
 def verify_password(plain_password, hashed_password):
     return pwd_context.verify(plain_password, hashed_password)
