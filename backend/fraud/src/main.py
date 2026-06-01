@@ -130,6 +130,9 @@ async def health_check():
 class IncomingCallRequest(BaseModel):
     phone_number: str
     caller_name: str | None = None
+    # Caller relationship reported by the mobile app: "contact" / "non_contact"
+    # / "private". Optional so older app builds keep working.
+    caller_type: str | None = None
 
 
 class CallEventRequest(BaseModel):
@@ -193,7 +196,7 @@ async def incoming_call(
     x_installation_id: str | None = Header("", alias="X-Installation-Id"),
 ):
     print(
-        f"[HTTP] incoming_call: caller={body.phone_number} ({body.caller_name}), user={x_user_id}",
+        f"[HTTP] incoming_call: caller={body.phone_number} ({body.caller_name}) type={body.caller_type}, user={x_user_id}",
         flush=True,
     )
     if not x_user_id:
@@ -208,7 +211,7 @@ async def incoming_call(
         async with sessions_lock:
             session = active_sessions.get(x_user_id)
         if session:
-            await session.on_incoming_call(conversation_id, body.phone_number, body.caller_name)
+            await session.on_incoming_call(conversation_id, body.phone_number, body.caller_name, body.caller_type)
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
 
