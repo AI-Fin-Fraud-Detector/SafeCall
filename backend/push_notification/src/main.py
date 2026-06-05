@@ -7,6 +7,7 @@ from copy import deepcopy
 import firebase_admin
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from firebase_admin import messaging
 from pydantic import BaseModel
 from pywebpush import WebPushException, webpush
@@ -78,6 +79,37 @@ BLOCK_MS = 5000  # wait up to 5 seconds
 READ_COUNT = 10  # max number of events to read at once
 
 
+class SSEConnection:
+    def __init__(self, user_id: str, app: str):
+        self.user_id = user_id
+        self.app = app
+        self.queue = asyncio.Queue()
+
+
+# SSE connections: (user_id, app) -> list of SSEConnection (one per tab/device)
+sse_connections: dict[tuple[str, str], list[SSEConnection]] = {}
+
+
+async def send_to_sse_clients(user_id: str, payload: dict, app: str | None = None):
+    """Send notification to all SSE-connected clients for this user+app."""
+    sse_sent = 0
+    key = (user_id, app) if app else (user_id, "")
+
+    if key in sse_connections:
+        connections = sse_connections[key]
+        for connection in connections:
+            try:
+                await connection.queue.put(payload)
+                sse_sent += 1
+            except Exception as e:
+                print(f"[SSE] Failed to queue message for {user_id}: {e}")
+
+        if sse_sent > 0:
+            print(f"[SSE] Sent to {sse_sent} client(s) for {user_id} ({app})")
+
+    return sse_sent
+
+
 async def process_push_stream():
     """
     Continuously read events from Redis stream and send notifications to the correct user.
@@ -120,8 +152,9 @@ async def process_push_stream():
                             sent, failed = await send_push_to_user(
                                 target_user_id, payload, app=app
                             )
+                            sse_sent = await send_to_sse_clients(target_user_id, payload, app=app)
                             print(
-                                f"[Stream] Notification sent to {target_user_id}: {sent} sent, {failed} failed"
+                                f"[Stream] Notification sent to {target_user_id}: {sent} push sent, {failed} failed, {sse_sent} SSE sent"
                             )
                         except Exception as e:
                             print(
@@ -220,6 +253,54 @@ async def get_vapid_public_key():
     if not public_key:
         raise HTTPException(status_code=500, detail="VAPID public key not configured")
     return {"public_key": public_key}
+
+
+@app.get("/api/push/events/{app}")
+async def stream_notifications(
+    app: str,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Stream notifications via SSE (Server-Sent Events) for the authenticated user."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="X-User-Id header is required")
+
+    connection = SSEConnection(x_user_id, app)
+    key = (x_user_id, app)
+
+    # Add to list of connections for this user+app
+    if key not in sse_connections:
+        sse_connections[key] = []
+    sse_connections[key].append(connection)
+    print(f"[SSE] Client connected: {x_user_id} ({app}), total: {len(sse_connections[key])}")
+
+    async def event_generator():
+        try:
+            while True:
+                payload = await asyncio.wait_for(connection.queue.get(), timeout=30)
+                yield f"data: {json.dumps(payload)}\n\n"
+        except asyncio.TimeoutError:
+            yield f": heartbeat\n\n"
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            print(f"[SSE] Error in event_generator for {x_user_id}: {e}")
+        finally:
+            # Remove this connection from the list
+            if key in sse_connections and connection in sse_connections[key]:
+                sse_connections[key].remove(connection)
+                print(f"[SSE] Client disconnected: {x_user_id} ({app}), remaining: {len(sse_connections[key])}")
+                # Clean up empty lists
+                if not sse_connections[key]:
+                    del sse_connections[key]
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/notify")
