@@ -130,9 +130,6 @@ async def health_check():
 class IncomingCallRequest(BaseModel):
     phone_number: str
     caller_name: str | None = None
-    # Caller relationship reported by the mobile app: "contact" / "non_contact"
-    # / "private". Optional so older app builds keep working.
-    caller_type: str | None = None
 
 
 class CallEventRequest(BaseModel):
@@ -140,6 +137,20 @@ class CallEventRequest(BaseModel):
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
+
+
+def determine_caller_type(phone_number: str, caller_name: str | None) -> str:
+    """Determine caller_type based on phone_number and caller_name.
+
+    - If phone_number is empty string → "private"
+    - Else if caller_name is missing → "non_contact"
+    - Else → "contact"
+    """
+    if not phone_number:
+        return "private"
+    if not caller_name:
+        return "non_contact"
+    return "contact"
 
 
 async def format_conversation_for_detection(conversation_id: str) -> str:
@@ -195,8 +206,9 @@ async def incoming_call(
     x_email: str | None = Header(None, alias="X-Email"),
     x_installation_id: str | None = Header("", alias="X-Installation-Id"),
 ):
+    caller_type = determine_caller_type(body.phone_number, body.caller_name)
     print(
-        f"[HTTP] incoming_call: caller={body.phone_number} ({body.caller_name}) type={body.caller_type}, user={x_user_id}",
+        f"[HTTP] incoming_call: caller={body.phone_number} ({body.caller_name}) type={caller_type}, user={x_user_id}",
         flush=True,
     )
     if not x_user_id:
@@ -211,7 +223,7 @@ async def incoming_call(
         async with sessions_lock:
             session = active_sessions.get(x_user_id)
         if session:
-            await session.on_incoming_call(conversation_id, body.phone_number, body.caller_name, body.caller_type)
+            await session.on_incoming_call(conversation_id, body.phone_number, body.caller_name, caller_type)
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
 
