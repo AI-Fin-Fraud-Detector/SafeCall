@@ -276,10 +276,12 @@ async def stream_notifications(
     async def event_generator():
         try:
             while True:
-                payload = await asyncio.wait_for(connection.queue.get(), timeout=30)
-                yield f"data: {json.dumps(payload)}\n\n"
-        except asyncio.TimeoutError:
-            yield f": heartbeat\n\n"
+                try:
+                    payload = await asyncio.wait_for(connection.queue.get(), timeout=30)
+                    yield f"data: {json.dumps(payload)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send heartbeat and continue listening (don't close connection)
+                    yield f": heartbeat\n\n"
         except asyncio.CancelledError:
             pass
         except Exception as e:
