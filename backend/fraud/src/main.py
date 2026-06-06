@@ -284,15 +284,17 @@ async def call_end(
         session = active_sessions.get(x_user_id)
     if session:
         await session.on_call_end("call_end")
-    await send_push(
-        target_user_id=x_user_id,
-        payload=NotificationPayload(
-            data={"type": "call_event", "action": "hangup"},
-            silent=True,
-            android_priority="high",
-        ),
-        app="host_mobile",
-    )
+    # Send hangup event to both host_mobile and kebbi apps
+    for app in ["host_mobile", "kebbi"]:
+        await send_push(
+            target_user_id=x_user_id,
+            payload=NotificationPayload(
+                data={"type": "call_event", "action": "hangup"},
+                silent=True,
+                android_priority="high",
+            ),
+            app=app,
+        )
     return {"status": "ok"}
 
 

@@ -597,15 +597,17 @@ class _Session:
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status("call_end"))
         )
-        await send_push(
-            target_user_id=uuid.UUID(self.user_uuid),
-            payload=NotificationPayload(
-                silent=True,
-                android_priority="high",
-                data={"action": "hangup"},
-            ),
-            app="host_mobile",
-        )
+        # Send hangup event to both host_mobile and kebbi apps
+        for app in ["host_mobile", "kebbi"]:
+            await send_push(
+                target_user_id=uuid.UUID(self.user_uuid),
+                payload=NotificationPayload(
+                    silent=True,
+                    android_priority="high",
+                    data={"type": "call_event", "action": "hangup"},
+                ),
+                app=app,
+            )
         self.call_ended.set()
 
     async def on_user_answer_call(self):
