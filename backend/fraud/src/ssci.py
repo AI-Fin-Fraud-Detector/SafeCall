@@ -8,6 +8,9 @@ from .const import (
     BETA_PRIOR_B,
     ZETA,
     ETA,
+    SSCI_PRIOR_W_MAX,
+    SSCI_IDENTITY_PRIOR,
+    CALLER_TYPE_NON_CONTACT,
 )
 
 
@@ -25,10 +28,16 @@ def extract_trigger_results(raw_results: list[bool]) -> list[bool]:
     ]
 
 
-def compute_ssci(trigger_results: list[bool]) -> dict:
+def compute_ssci(trigger_results: list[bool], caller_type: str | None = None) -> dict:
     """
     Compute SSCI confidence and sub-scores from trigger results.
     Based on evidence (by length), agreement (historical), and stability (flip EMA).
+
+    ``caller_type`` carries the caller's relationship to the user
+    (CALLER_TYPE_CONTACT / CALLER_TYPE_NON_CONTACT / CALLER_TYPE_PRIVATE). It drives
+    the Phase 4 identity-prior adjustment, which blends the raw confidence with a
+    per-identity prior; the prior dominates early and fades as evidence grows. None
+    or an unrecognized value falls back to the general (non_contact) prior.
     """
     if not trigger_results:
         return {}
@@ -75,11 +84,24 @@ def compute_ssci(trigger_results: list[bool]) -> dict:
 
         stability = math.exp(-(ETA * flip_ema))
 
-    confidence = evidence * agreement * stability
+    raw_confidence = evidence * agreement * stability
+
+    # Phase 4: Identity Prior Adjustment
+    # Blend the raw confidence with a per-identity prior. The blending weight
+    # w_k = W_MAX * (1 - E_k) lets the prior dominate early (small evidence) and
+    # recede as the dialogue grows (E_k -> 1).
+    prior_table = SSCI_IDENTITY_PRIOR.get(
+        caller_type, SSCI_IDENTITY_PRIOR[CALLER_TYPE_NON_CONTACT]
+    )
+    prior = prior_table[1 if y_k else 0]
+    prior_weight = SSCI_PRIOR_W_MAX * (1.0 - evidence)
+    confidence = (1.0 - prior_weight) * raw_confidence + prior_weight * prior
+
     scam_probability = confidence if y_k else (1.0 - confidence)
 
     return {
         "available": True,
+        "caller_type": caller_type,
         "trigger_index": k,
         "n_k": int(n_k),
         "latest_trigger_decision": y_k,
@@ -88,6 +110,9 @@ def compute_ssci(trigger_results: list[bool]) -> dict:
         "agreement": round(agreement, 7),
         "stability": round(stability, 7),
         "flip_ema": round(flip_ema, 7),
+        "raw_confidence": round(raw_confidence, 7),
+        "identity_prior": round(prior, 7),
+        "prior_weight": round(prior_weight, 7),
         "confidence": round(confidence, 7),
         "decision_label": "scam" if y_k else "normal",
         "scam_probability": round(scam_probability, 7),

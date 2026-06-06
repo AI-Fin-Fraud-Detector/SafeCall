@@ -67,6 +67,10 @@ class _Session:
         self.redis_client = redis_client
         self.conversation_id: str | None = None
         self.messages: list[dict] = []
+        # Caller's relationship to the user, set on incoming_call. One of
+        # CALLER_TYPE_CONTACT / CALLER_TYPE_NON_CONTACT / CALLER_TYPE_PRIVATE,
+        # or None when the mobile app did not report it.
+        self.caller_type: str | None = None
 
         self.recorder = None
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -102,8 +106,10 @@ class _Session:
         conversation_id: str,
         caller_phone: str = "",
         caller_name: str | None = None,
+        caller_type: str | None = None,
     ):
         self.conversation_id = conversation_id
+        self.caller_type = caller_type
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, role, content FROM messages "
@@ -476,7 +482,7 @@ class _Session:
             if is_trigger:
                 trigger_results = extract_trigger_results(self.raw_results)
                 self.trigger_index = len(trigger_results)
-                ssci = compute_ssci(trigger_results)
+                ssci = compute_ssci(trigger_results, self.caller_type)
                 if ssci:
                     detection_metadata["detection"]["ssci"] = ssci
 
