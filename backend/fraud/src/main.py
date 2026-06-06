@@ -275,6 +275,34 @@ async def incoming_call(
         return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
 
 
+@app.get("/api/fraud/active-call")
+async def get_active_call(
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Get current active call info if any, for notification handling."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+
+    async with sessions_lock:
+        session = active_sessions.get(x_user_id)
+
+    if not session or not session.call_active:
+        return {
+            "has_active_call": False,
+        }
+
+    # Return active call info
+    return {
+        "has_active_call": True,
+        "conversation_id": session.conversation_id,
+        "phone_number": session.caller_phone,
+        "caller_name": session.caller_name,
+        "duration_seconds": int((session._call_start_time and
+                                 (session._last_recv_frame_time or 0) - session._call_start_time) or 0),
+        "current_score": int(session.frame_score * 100) if session.frame_score else 0,
+    }
+
+
 @app.post("/api/fraud/call-end")
 async def call_end(
     x_user_id: str | None = Header(None, alias="X-User-Id"),
