@@ -292,15 +292,15 @@ async def get_active_call(
         }
 
     # Return active call info
-    call_start_time = session._call_start_time.isoformat() if session._call_start_time else None
+    import time as time_module
+    duration_seconds = int(time_module.monotonic() - session.call_started_at) if session.call_started_at else 0
     return {
         "has_active_call": True,
         "conversation_id": session.conversation_id,
         "phone_number": session.caller_phone,
         "caller_name": session.caller_name,
-        "call_start_time": call_start_time,
-        "duration_seconds": int((session._call_start_time and
-                                 (session._last_recv_frame_time or 0) - session._call_start_time) or 0),
+        "call_start_time": session.call_start_datetime,
+        "duration_seconds": duration_seconds,
         "current_score": int(session.frame_score * 100) if session.frame_score else 0,
     }
 
