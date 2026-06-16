@@ -275,6 +275,36 @@ async def incoming_call(
         return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
 
 
+@app.get("/api/fraud/active-call")
+async def get_active_call(
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Get current active call info if any, for notification handling."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+
+    async with sessions_lock:
+        session = active_sessions.get(x_user_id)
+
+    if not session or not session.call_active:
+        return {
+            "has_active_call": False,
+        }
+
+    # Return active call info
+    import time as time_module
+    duration_seconds = int(time_module.monotonic() - session.call_started_at) if session.call_started_at else 0
+    return {
+        "has_active_call": True,
+        "conversation_id": session.conversation_id,
+        "phone_number": session.caller_phone,
+        "caller_name": session.caller_name,
+        "call_start_time": session.call_start_datetime,
+        "duration_seconds": duration_seconds,
+        "current_score": int(session.frame_score * 100) if session.frame_score else 0,
+    }
+
+
 @app.post("/api/fraud/call-end")
 async def call_end(
     x_user_id: str | None = Header(None, alias="X-User-Id"),
@@ -284,15 +314,17 @@ async def call_end(
         session = active_sessions.get(x_user_id)
     if session:
         await session.on_call_end("call_end")
-    await send_push(
-        target_user_id=x_user_id,
-        payload=NotificationPayload(
-            data={"type": "call_event", "action": "hangup"},
-            silent=True,
-            android_priority="high",
-        ),
-        app="host_mobile",
-    )
+    # Send hangup event to both host_mobile and kebbi apps
+    for app in ["host_mobile", "kebbi"]:
+        await send_push(
+            target_user_id=x_user_id,
+            payload=NotificationPayload(
+                data={"type": "call_event", "action": "hangup"},
+                silent=True,
+                android_priority="high",
+            ),
+            app=app,
+        )
     return {"status": "ok"}
 
 

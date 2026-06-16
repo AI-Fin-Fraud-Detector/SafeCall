@@ -96,6 +96,7 @@ class _Session:
         self.ssci_action_task: asyncio.Task | None = None
         self.detection_task: asyncio.Task | None = None
         self.call_started_at: float | None = None
+        self.call_start_datetime: str | None = None  # ISO format datetime when call started
         # Ordered list of completed SSCI snapshots: {trigger_index, message_id, ssci}
         self.ssci_snapshots: list[dict] = []
 
@@ -130,7 +131,9 @@ class _Session:
             sys_id = await self._save_message("system", formatted_prompt)
             self.messages = [{"id": sys_id, "role": "system", "content": formatted_prompt}]
 
+        from datetime import datetime
         self.call_started_at = time.monotonic()
+        self.call_start_datetime = datetime.utcnow().isoformat() + "Z"
         self.call_active.set()
         await self.response_queue.put(
             voice_pb2.ServerMessage(
@@ -597,15 +600,17 @@ class _Session:
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status("call_end"))
         )
-        await send_push(
-            target_user_id=uuid.UUID(self.user_uuid),
-            payload=NotificationPayload(
-                silent=True,
-                android_priority="high",
-                data={"action": "hangup"},
-            ),
-            app="host_mobile",
-        )
+        # Send hangup event to both host_mobile and kebbi apps
+        for app in ["host_mobile", "kebbi"]:
+            await send_push(
+                target_user_id=uuid.UUID(self.user_uuid),
+                payload=NotificationPayload(
+                    silent=True,
+                    android_priority="high",
+                    data={"type": "call_event", "action": "hangup"},
+                ),
+                app=app,
+            )
         self.call_ended.set()
 
     async def on_user_answer_call(self):
