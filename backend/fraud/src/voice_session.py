@@ -242,6 +242,19 @@ class _Session:
                 )
             )
 
+    async def _update_conversation_metadata(self, scam_probability: float) -> None:
+        if not self.conversation_id or not self.db_pool:
+            return
+        try:
+            async with self.db_pool.acquire() as conn:
+                await conn.execute(
+                    "UPDATE conversations SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{scam_probability}', to_jsonb($1::float)) WHERE id = $2",
+                    scam_probability,
+                    uuid.UUID(self.conversation_id),
+                )
+        except Exception as e:
+            print(f"[ERROR] Failed to update conversation metadata: {e}", flush=True)
+
     async def _push_message(
         self,
         user_id: uuid.UUID,
@@ -538,6 +551,7 @@ class _Session:
                 self.ssci_action_started = True
                 scam_prob = ssci.get("scam_probability", 0.5)
                 self.scam_probability = scam_prob  # Update current score
+                await self._update_conversation_metadata(scam_prob)
                 if scam_prob > SSCI_SCAM_THRESHOLD:
                     self.ssci_action_task = asyncio.create_task(
                         self._handle_scam_detected(scam_prob, ssci)
