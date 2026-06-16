@@ -271,7 +271,7 @@ async def get_active_call(
     async with sessions_lock:
         session = active_sessions.get(x_user_id)
 
-    if not session or not session.call_active:
+    if not session or not session.call_active.is_set():
         return {
             "has_active_call": False,
         }
