@@ -255,6 +255,27 @@ class _Session:
         except Exception as e:
             print(f"[ERROR] Failed to update conversation metadata: {e}", flush=True)
 
+    async def _send_call_end_notification(self) -> None:
+        if not self.user_uuid or not self.conversation_id:
+            return
+        try:
+            # Send to both kebbi and host_mobile apps
+            for app in ["kebbi", "host_mobile"]:
+                await send_push(
+                    target_user_id=uuid.UUID(self.user_uuid),
+                    payload=NotificationPayload(
+                        silent=True,
+                        data={
+                            "type": "call_ended",
+                            "conversation_id": self.conversation_id,
+                        },
+                    ),
+                    app=app,
+                )
+            print(f"[SESSION] Call end notification sent to both apps for conversation: {self.conversation_id}", flush=True)
+        except Exception as e:
+            print(f"[ERROR] Failed to send call end notification: {e}", flush=True)
+
     async def _push_message(
         self,
         user_id: uuid.UUID,
@@ -323,6 +344,11 @@ class _Session:
             read_task.cancel()
             self._cancel_current_task()
             await self._cleanup()
+
+            # Send call end notification if there's an active call
+            if self.call_active.is_set() and self.conversation_id:
+                await self._send_call_end_notification()
+
             print(f"[CONN] Session closed: user={self.user_uuid}\n", flush=True)
 
     async def _handle_requests(self, request_iterator):
