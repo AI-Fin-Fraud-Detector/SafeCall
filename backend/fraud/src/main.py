@@ -286,7 +286,7 @@ async def get_active_call(
         "caller_name": session.caller_name,
         "call_start_time": session.call_start_datetime,
         "duration_seconds": duration_seconds,
-        "current_score": int(session.frame_score * 100) if session.frame_score else 0,
+        "current_score": int(session.scam_probability * 100),
     }
 
 

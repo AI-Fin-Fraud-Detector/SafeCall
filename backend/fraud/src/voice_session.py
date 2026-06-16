@@ -98,6 +98,7 @@ class _Session:
         self.detection_task: asyncio.Task | None = None
         self.call_started_at: float | None = None
         self.call_start_datetime: str | None = None  # ISO format datetime when call started
+        self.scam_probability: float = 0.0  # Current scam probability from SSCI
         # Ordered list of completed SSCI snapshots: {trigger_index, message_id, ssci}
         self.ssci_snapshots: list[dict] = []
 
@@ -536,6 +537,7 @@ class _Session:
             if is_trigger and not self.ssci_action_started and ssci and call_age >= SSCI_MAX_DURATION_SECONDS:
                 self.ssci_action_started = True
                 scam_prob = ssci.get("scam_probability", 0.5)
+                self.scam_probability = scam_prob  # Update current score
                 if scam_prob > SSCI_SCAM_THRESHOLD:
                     self.ssci_action_task = asyncio.create_task(
                         self._handle_scam_detected(scam_prob, ssci)
