@@ -117,7 +117,6 @@ class _Session:
         conversation_id: str,
         caller_phone: str = "",
         caller_name: str | None = None,
-        caller_type: str | None = None,
     ):
         self.conversation_id = conversation_id
         self.caller_phone = caller_phone
