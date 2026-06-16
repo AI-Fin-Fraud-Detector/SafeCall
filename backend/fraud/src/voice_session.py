@@ -11,6 +11,9 @@ from pydantic import BaseModel
 
 from .const import (
     ANTI_FRAUD_SYSTEM_PROMPT as SYSTEM_PROMPT,
+    CALLER_TYPE_CONTACT,
+    CALLER_TYPE_NON_CONTACT,
+    CALLER_TYPE_PRIVATE,
 )
 from .const import (
     MAX_TOKENS,
@@ -67,10 +70,8 @@ class _Session:
         self.redis_client = redis_client
         self.conversation_id: str | None = None
         self.messages: list[dict] = []
-        # Caller's relationship to the user, set on incoming_call. One of
-        # CALLER_TYPE_CONTACT / CALLER_TYPE_NON_CONTACT / CALLER_TYPE_PRIVATE,
-        # or None when the mobile app did not report it.
-        self.caller_type: str | None = None
+        self.caller_phone: str | None = None
+        self.caller_name: str | None = None
 
         self.recorder = None
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -102,6 +103,15 @@ class _Session:
 
     # ─── Call lifecycle ──────────────────────────────────────────────────────
 
+    @property
+    def caller_type(self) -> str | None:
+        """Determine caller type from phone and name."""
+        if not self.caller_phone:
+            return CALLER_TYPE_PRIVATE
+        if not self.caller_name:
+            return CALLER_TYPE_NON_CONTACT
+        return CALLER_TYPE_CONTACT
+
     async def on_incoming_call(
         self,
         conversation_id: str,
@@ -110,7 +120,8 @@ class _Session:
         caller_type: str | None = None,
     ):
         self.conversation_id = conversation_id
-        self.caller_type = caller_type
+        self.caller_phone = caller_phone
+        self.caller_name = caller_name
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, role, content FROM messages "
