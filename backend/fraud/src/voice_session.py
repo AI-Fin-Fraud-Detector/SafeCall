@@ -11,6 +11,9 @@ from pydantic import BaseModel
 
 from .const import (
     ANTI_FRAUD_SYSTEM_PROMPT as SYSTEM_PROMPT,
+    CALLER_TYPE_CONTACT,
+    CALLER_TYPE_NON_CONTACT,
+    CALLER_TYPE_PRIVATE,
 )
 from .const import (
     MAX_TOKENS,
@@ -67,10 +70,8 @@ class _Session:
         self.redis_client = redis_client
         self.conversation_id: str | None = None
         self.messages: list[dict] = []
-        # Caller's relationship to the user, set on incoming_call. One of
-        # CALLER_TYPE_CONTACT / CALLER_TYPE_NON_CONTACT / CALLER_TYPE_PRIVATE,
-        # or None when the mobile app did not report it.
-        self.caller_type: str | None = None
+        self.caller_phone: str | None = None
+        self.caller_name: str | None = None
 
         self.recorder = None
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -96,20 +97,31 @@ class _Session:
         self.ssci_action_task: asyncio.Task | None = None
         self.detection_task: asyncio.Task | None = None
         self.call_started_at: float | None = None
+        self.call_start_datetime: str | None = None  # ISO format datetime when call started
+        self.scam_probability: float = 0.0  # Current scam probability from SSCI
         # Ordered list of completed SSCI snapshots: {trigger_index, message_id, ssci}
         self.ssci_snapshots: list[dict] = []
 
     # ─── Call lifecycle ──────────────────────────────────────────────────────
+
+    @property
+    def caller_type(self) -> str | None:
+        """Determine caller type from phone and name."""
+        if not self.caller_phone:
+            return CALLER_TYPE_PRIVATE
+        if not self.caller_name:
+            return CALLER_TYPE_NON_CONTACT
+        return CALLER_TYPE_CONTACT
 
     async def on_incoming_call(
         self,
         conversation_id: str,
         caller_phone: str = "",
         caller_name: str | None = None,
-        caller_type: str | None = None,
     ):
         self.conversation_id = conversation_id
-        self.caller_type = caller_type
+        self.caller_phone = caller_phone
+        self.caller_name = caller_name
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, role, content FROM messages "
@@ -130,7 +142,9 @@ class _Session:
             sys_id = await self._save_message("system", formatted_prompt)
             self.messages = [{"id": sys_id, "role": "system", "content": formatted_prompt}]
 
+        from datetime import datetime
         self.call_started_at = time.monotonic()
+        self.call_start_datetime = datetime.utcnow().isoformat() + "Z"
         self.call_active.set()
         await self.response_queue.put(
             voice_pb2.ServerMessage(
@@ -157,6 +171,12 @@ class _Session:
         self._cancel_current_task()
         if self.ssci_action_task and not self.ssci_action_task.done():
             self.ssci_action_task.cancel()
+
+        # Calculate and store call duration in conversation metadata
+        if self.call_started_at is not None:
+            duration_seconds = int(time.monotonic() - self.call_started_at)
+            await self._update_conversation_metadata(duration_seconds=duration_seconds)
+
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status(event_type))
         )
@@ -228,6 +248,57 @@ class _Session:
                 )
             )
 
+    async def _update_conversation_metadata(self, scam_probability: float = None, duration_seconds: int = None) -> None:
+        if not self.conversation_id or not self.db_pool:
+            return
+        try:
+            async with self.db_pool.acquire() as conn:
+                # Build JSONB update for both scam_probability and duration_seconds
+                updates = []
+                params = [uuid.UUID(self.conversation_id)]
+
+                if scam_probability is not None:
+                    updates.append("metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{scam_probability}', to_jsonb($2::float))")
+                    params.insert(1, scam_probability)
+
+                if duration_seconds is not None:
+                    if scam_probability is not None:
+                        updates.append(f"metadata = jsonb_set(metadata, '{{duration_seconds}}', to_jsonb($3::int))")
+                    else:
+                        updates.append(f"metadata = jsonb_set(COALESCE(metadata, '{{}}'::jsonb), '{{duration_seconds}}', to_jsonb($2::int))")
+                        params.insert(1, duration_seconds)
+
+                if updates:
+                    if scam_probability is not None and duration_seconds is not None:
+                        query = f"UPDATE conversations SET metadata = jsonb_set(jsonb_set(COALESCE(metadata, '{{}}'::jsonb), '{{scam_probability}}', to_jsonb($2::float)), '{{duration_seconds}}', to_jsonb($3::int)) WHERE id = $1"
+                        await conn.execute(query, params[0], scam_probability, duration_seconds)
+                    else:
+                        query = f"UPDATE conversations SET {', '.join(updates)} WHERE id = $1"
+                        await conn.execute(query, *params)
+        except Exception as e:
+            print(f"[ERROR] Failed to update conversation metadata: {e}", flush=True)
+
+    async def _send_call_end_notification(self) -> None:
+        if not self.user_uuid or not self.conversation_id:
+            return
+        try:
+            # Send to both kebbi and host_mobile apps
+            for app in ["kebbi", "host_mobile"]:
+                await send_push(
+                    target_user_id=uuid.UUID(self.user_uuid),
+                    payload=NotificationPayload(
+                        silent=True,
+                        data={
+                            "type": "call_ended",
+                            "conversation_id": self.conversation_id,
+                        },
+                    ),
+                    app=app,
+                )
+            print(f"[SESSION] Call end notification sent to both apps for conversation: {self.conversation_id}", flush=True)
+        except Exception as e:
+            print(f"[ERROR] Failed to send call end notification: {e}", flush=True)
+
     async def _push_message(
         self,
         user_id: uuid.UUID,
@@ -296,6 +367,11 @@ class _Session:
             read_task.cancel()
             self._cancel_current_task()
             await self._cleanup()
+
+            # Send call end notification if there's an active call
+            if self.call_active.is_set() and self.conversation_id:
+                await self._send_call_end_notification()
+
             print(f"[CONN] Session closed: user={self.user_uuid}\n", flush=True)
 
     async def _handle_requests(self, request_iterator):
@@ -523,6 +599,8 @@ class _Session:
             if is_trigger and not self.ssci_action_started and ssci and call_age >= SSCI_MAX_DURATION_SECONDS:
                 self.ssci_action_started = True
                 scam_prob = ssci.get("scam_probability", 0.5)
+                self.scam_probability = scam_prob  # Update current score
+                await self._update_conversation_metadata(scam_prob)
                 if scam_prob > SSCI_SCAM_THRESHOLD:
                     self.ssci_action_task = asyncio.create_task(
                         self._handle_scam_detected(scam_prob, ssci)
@@ -597,15 +675,17 @@ class _Session:
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status("call_end"))
         )
-        await send_push(
-            target_user_id=uuid.UUID(self.user_uuid),
-            payload=NotificationPayload(
-                silent=True,
-                android_priority="high",
-                data={"action": "hangup"},
-            ),
-            app="host_mobile",
-        )
+        # Send hangup event to both host_mobile and kebbi apps
+        for app in ["host_mobile", "kebbi"]:
+            await send_push(
+                target_user_id=uuid.UUID(self.user_uuid),
+                payload=NotificationPayload(
+                    silent=True,
+                    android_priority="high",
+                    data={"type": "call_event", "action": "hangup"},
+                ),
+                app=app,
+            )
         self.call_ended.set()
 
     async def on_user_answer_call(self):

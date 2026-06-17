@@ -64,7 +64,7 @@ class LLMPipeline:
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
-        self.use_4bit = False
+        self.use_4bit = True
         self.bnb_cfg = None
         if self.use_4bit:
             self.bnb_cfg = BitsAndBytesConfig(
@@ -78,10 +78,9 @@ class LLMPipeline:
         # 注意：需已登入/有權讀取基底模型；或先行快取到本機。
         self.model = AutoPeftModelForCausalLM.from_pretrained(
             ADAPTER_DIR,
-            dtype=torch.float16,
             device_map="auto",
             attn_implementation="sdpa",  # 省事不裝 FA2；如已安裝 flash-attn 可改 "flash_attention_2"
-            quantization_config=self.bnb_cfg,
+            quantization_config=self.bnb_cfg if self.use_4bit else None,
         )
         self.model.eval()
 
