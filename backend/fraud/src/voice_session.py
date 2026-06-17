@@ -171,6 +171,12 @@ class _Session:
         self._cancel_current_task()
         if self.ssci_action_task and not self.ssci_action_task.done():
             self.ssci_action_task.cancel()
+
+        # Calculate and store call duration in conversation metadata
+        if self.call_started_at is not None:
+            duration_seconds = int(time.monotonic() - self.call_started_at)
+            await self._update_conversation_metadata(duration_seconds=duration_seconds)
+
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status(event_type))
         )
@@ -242,16 +248,33 @@ class _Session:
                 )
             )
 
-    async def _update_conversation_metadata(self, scam_probability: float) -> None:
+    async def _update_conversation_metadata(self, scam_probability: float = None, duration_seconds: int = None) -> None:
         if not self.conversation_id or not self.db_pool:
             return
         try:
             async with self.db_pool.acquire() as conn:
-                await conn.execute(
-                    "UPDATE conversations SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{scam_probability}', to_jsonb($1::float)) WHERE id = $2",
-                    scam_probability,
-                    uuid.UUID(self.conversation_id),
-                )
+                # Build JSONB update for both scam_probability and duration_seconds
+                updates = []
+                params = [uuid.UUID(self.conversation_id)]
+
+                if scam_probability is not None:
+                    updates.append("metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{scam_probability}', to_jsonb($2::float))")
+                    params.insert(1, scam_probability)
+
+                if duration_seconds is not None:
+                    if scam_probability is not None:
+                        updates.append(f"metadata = jsonb_set(metadata, '{{duration_seconds}}', to_jsonb($3::int))")
+                    else:
+                        updates.append(f"metadata = jsonb_set(COALESCE(metadata, '{{}}'::jsonb), '{{duration_seconds}}', to_jsonb($2::int))")
+                        params.insert(1, duration_seconds)
+
+                if updates:
+                    if scam_probability is not None and duration_seconds is not None:
+                        query = f"UPDATE conversations SET metadata = jsonb_set(jsonb_set(COALESCE(metadata, '{{}}'::jsonb), '{{scam_probability}}', to_jsonb($2::float)), '{{duration_seconds}}', to_jsonb($3::int)) WHERE id = $1"
+                        await conn.execute(query, params[0], scam_probability, duration_seconds)
+                    else:
+                        query = f"UPDATE conversations SET {', '.join(updates)} WHERE id = $1"
+                        await conn.execute(query, *params)
         except Exception as e:
             print(f"[ERROR] Failed to update conversation metadata: {e}", flush=True)
 
