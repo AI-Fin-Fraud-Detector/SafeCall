@@ -533,7 +533,15 @@ class EdgeClient:
 
             @pc.on("connectionstatechange")
             async def on_state():
-                print(f"\n[WEBRTC] Connection state: {pc.connectionState}", flush=True)
+                state = pc.connectionState
+                print(f"\n[WEBRTC] Connection state: {state}", flush=True)
+                # A peer that fails/closes outside call_end must be torn down, or
+                # webrtc_active stays true and mic audio routes into a dead peer.
+                # ("disconnected" is transient and may recover, so don't act on it.)
+                if state in ("failed", "closed") and self.webrtc_active:
+                    self.webrtc_active = False  # synchronous guard vs. reentrant close()
+                    print("\n[WEBRTC] Peer connection lost — tearing down", flush=True)
+                    await self._stop_webrtc()
 
             # setLocalDescription waits for ICE gathering to complete (non-trickle),
             # so localDescription.sdp already carries the candidates.
@@ -593,6 +601,12 @@ class EdgeClient:
         self.webrtc_start_task = None
         if self.webrtc_consumer_task and not self.webrtc_consumer_task.done():
             self.webrtc_consumer_task.cancel()
+            try:
+                await self.webrtc_consumer_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f"\n[WEBRTC] remote audio task cleanup error: {e}", flush=True)
         self.webrtc_consumer_task = None
         if self.pc is not None:
             try:
