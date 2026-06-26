@@ -193,6 +193,9 @@ class _CallerAudioTrack(MediaStreamTrack):
 
     kind = "audio"
     SAMPLES = WEBRTC_RATE // 50  # 20ms @ 48kHz = 960 samples
+    # Max source backlog to keep (~32ms per item) before dropping oldest, so the
+    # caller audio stays near-live instead of lagging by the WebRTC setup time.
+    MAX_QUEUED = 5  # ~160ms jitter buffer
 
     def __init__(self, source_queue: asyncio.Queue):
         super().__init__()
@@ -210,6 +213,14 @@ class _CallerAudioTrack(MediaStreamTrack):
         delay = self._start + self._timestamp / WEBRTC_RATE - time.time()
         if delay > 0:
             await asyncio.sleep(delay)
+
+        # Drop stale backlog (e.g. caller audio buffered during the WebRTC
+        # handshake). Consuming at realtime can't catch up, so trim to stay live.
+        while self._queue.qsize() > self.MAX_QUEUED:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
 
         while len(self._buf) < self.SAMPLES:
             try:
