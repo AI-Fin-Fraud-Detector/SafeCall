@@ -463,7 +463,7 @@ class EdgeClient:
 
                     if event_type == "incoming_call":
                         caller_phone = status.get("caller_phone", "Private Number")
-                        print(f"\n[CALL] Incoming call from {caller_phone} ({status.get('caller_name', "")}) — starting mic {status.get('metadata', '')}", flush=True)
+                        print(f"\n[CALL] Incoming call from {caller_phone} ({status.get('caller_name', '')}) — starting mic {status.get('metadata', '')}", flush=True)
                         self.mic_active = True
 
                     elif event_type == "call_end":
@@ -578,17 +578,26 @@ class EdgeClient:
     async def _consume_remote_audio(self, track):
         """Play kebbi's audio (elder voice) into the output stream → MyCall → caller."""
         resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        write_task = None
         try:
             while True:
                 frame = await track.recv()
                 for out in resampler.resample(frame):
                     arr = out.to_ndarray().reshape(-1).astype(DTYPE)
                     if self.output_stream is not None:
-                        await asyncio.to_thread(self.output_stream.write, arr)
+                        write_task = asyncio.create_task(asyncio.to_thread(self.output_stream.write, arr))
+                        await write_task
         except (MediaStreamError, asyncio.CancelledError):
             pass
         except Exception as e:
             print(f"\n[WEBRTC] remote audio error: {e}", flush=True)
+        finally:
+            # Ensure any pending write completes before output_stream is closed
+            if write_task is not None and not write_task.done():
+                try:
+                    await asyncio.shield(write_task)
+                except Exception:
+                    pass
 
     async def _stop_webrtc(self):
         self.webrtc_active = False
