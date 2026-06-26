@@ -356,10 +356,16 @@ async def post_webrtc_answer(
     """Receive kebbi's WebRTC SDP answer and relay it to the edge device."""
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    # Consume the pending offer atomically so a retried/duplicate answer for the
+    # same negotiation is rejected (a second setRemoteDescription is an invalid
+    # state transition on edge).
     async with sessions_lock:
         session = active_sessions.get(x_user_id)
-    if not session:
-        raise HTTPException(status_code=404, detail="No active edge session")
+        if not session:
+            raise HTTPException(status_code=404, detail="No active edge session")
+        if not session.webrtc_offer_sdp:
+            raise HTTPException(status_code=409, detail="No pending WebRTC offer")
+        session.webrtc_offer_sdp = None
     await session.forward_answer_to_edge(body.sdp)
     return {"status": "ok"}
 

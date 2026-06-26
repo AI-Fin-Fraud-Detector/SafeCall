@@ -414,9 +414,17 @@ class _Session:
                 elif message.HasField("signal"):
                     sig = dict(message.signal)
                     if sig.get("kind") == "offer":
-                        self.webrtc_offer_sdp = sig.get("sdp")
+                        sdp = sig.get("sdp")
+                        if not isinstance(sdp, str) or not sdp.strip():
+                            # Don't clobber a previously cached valid offer with junk.
+                            print(
+                                f"[WEBRTC] Ignoring malformed offer from edge: user={self.user_uuid}",
+                                flush=True,
+                            )
+                            continue
+                        self.webrtc_offer_sdp = sdp
                         print(
-                            f"[WEBRTC] Stored offer from edge ({len(self.webrtc_offer_sdp or '')} chars): user={self.user_uuid}",
+                            f"[WEBRTC] Stored offer from edge ({len(sdp)} chars): user={self.user_uuid}",
                             flush=True,
                         )
                     else:
