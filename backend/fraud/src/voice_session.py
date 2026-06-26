@@ -61,6 +61,13 @@ def make_status(type: str, **kwargs) -> Struct:
     return s
 
 
+def make_signal(kind: str, sdp: str) -> Struct:
+    """Build a WebRTC signaling payload, e.g. {"kind": "answer", "sdp": "..."}."""
+    s = Struct()
+    s.update({"kind": kind, "sdp": sdp})
+    return s
+
+
 class _Session:
     """All state for a single gRPC Session call. One instance per connected edge device."""
 
@@ -87,6 +94,10 @@ class _Session:
         self.call_active = asyncio.Event()
         # call_ended signals the session loop to close
         self.call_ended = asyncio.Event()
+
+        # WebRTC handoff: SDP offer produced by edge after the user answers,
+        # served to kebbi via GET /api/fraud/webrtc/offer
+        self.webrtc_offer_sdp: str | None = None
 
         # SSCI state
         self.raw_results: list[bool] = []
@@ -168,6 +179,7 @@ class _Session:
 
     async def on_call_end(self, event_type: str):
         self.call_active.clear()
+        self.webrtc_offer_sdp = None
         self._cancel_current_task()
         if self.ssci_action_task and not self.ssci_action_task.done():
             self.ssci_action_task.cancel()
@@ -399,6 +411,16 @@ class _Session:
                         await asyncio.to_thread(
                             self.recorder.feed_audio, message.audio_chunk
                         )
+                elif message.HasField("signal"):
+                    sig = dict(message.signal)
+                    if sig.get("kind") == "offer":
+                        self.webrtc_offer_sdp = sig.get("sdp")
+                        print(
+                            f"[WEBRTC] Stored offer from edge ({len(self.webrtc_offer_sdp or '')} chars): user={self.user_uuid}",
+                            flush=True,
+                        )
+                    else:
+                        print(f"\n[WEBRTC] Unexpected signal kind from edge: {sig.get('kind')}", flush=True)
                 else:
                     payload_type = message.WhichOneof("payload")
                     print(f"\n[WARN] Unknown payload: {payload_type}", flush=True)
@@ -693,6 +715,8 @@ class _Session:
             self.ssci_action_task.cancel()
         self._cancel_current_task()
         self.call_active.clear()
+        # Drop any stale offer; edge will produce a fresh one on direct_call
+        self.webrtc_offer_sdp = None
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status("direct_call"))
         )
@@ -706,6 +730,13 @@ class _Session:
                     torch.cuda.empty_cache()
             except Exception:
                 pass
+
+    async def forward_answer_to_edge(self, sdp: str):
+        """Relay the WebRTC SDP answer from kebbi to the edge device over gRPC."""
+        await self.response_queue.put(
+            voice_pb2.ServerMessage(signal=make_signal("answer", sdp))
+        )
+        print(f"[WEBRTC] Forwarded answer to edge: user={self.user_uuid}", flush=True)
 
     # ─── LLM + TTS ───────────────────────────────────────────────────────────
 

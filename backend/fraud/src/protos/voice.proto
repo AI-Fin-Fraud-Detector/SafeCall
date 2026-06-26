@@ -11,6 +11,7 @@ message ClientMessage {
   oneof payload {
     bytes audio_chunk = 1; // Raw 16kHz Mono Int16 PCM
     bool interrupt = 2;    // Signal to stop AI generation/playback
+    google.protobuf.Struct signal = 3; // WebRTC signaling, e.g. {"kind":"offer","sdp":"..."}
   }
 }
 
@@ -18,5 +19,6 @@ message ServerMessage {
   oneof payload {
     bytes audio_response = 1;          // Raw PCM audio (16kHz Mono Int16)
     google.protobuf.Struct text_status = 2; // JSON status payload
+    google.protobuf.Struct signal = 3; // WebRTC signaling, e.g. {"kind":"answer","sdp":"..."}
   }
 }
