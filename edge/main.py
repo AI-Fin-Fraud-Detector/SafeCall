@@ -17,6 +17,18 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import voice_pb2
 import voice_pb2_grpc
 
+import fractions
+import av
+from aiortc import (
+    RTCPeerConnection,
+    RTCConfiguration,
+    RTCIceServer,
+    RTCSessionDescription,
+    MediaStreamTrack,
+)
+from aiortc.mediastreams import MediaStreamError
+from google.protobuf.struct_pb2 import Struct
+
 SAMPLE_RATE = 16000
 CHANNELS = 1
 DTYPE = np.int16
@@ -26,6 +38,33 @@ FADE_SAMPLES = int(SAMPLE_RATE * 0.05)  # 50 ms fade-out
 MUTE_MIC_WHILE_PLAYBACK = False
 SERVER_ADDRESS = os.getenv("SERVER_ADDRESS", "localhost:60015")
 EDGE_TOKEN = os.getenv("EDGE_TOKEN", "")
+# Comma-separated STUN/anonymous ICE servers for the WebRTC handoff (public STUN by default).
+ICE_SERVERS = [
+    u.strip()
+    for u in os.getenv("ICE_SERVERS", "stun:stun.l.google.com:19302").split(",")
+    if u.strip()
+]
+# Optional authenticated TURN relay. aiortc needs username/credential as separate
+# fields (they can't be embedded in the URL), so set all three. Blank = STUN only.
+TURN_URL = os.getenv("TURN_URL", "").strip()
+TURN_USERNAME = os.getenv("TURN_USERNAME", "").strip()
+TURN_CREDENTIAL = os.getenv("TURN_CREDENTIAL", "").strip()
+WEBRTC_RATE = 48000  # WebRTC/Opus works at 48kHz; edge audio I/O is 16kHz
+
+
+def build_ice_servers() -> list[RTCIceServer]:
+    """ICE servers for the peer connection: anonymous STUN entries plus an
+    optional authenticated TURN relay carrying its credentials as separate fields."""
+    servers = [RTCIceServer(urls=[u]) for u in ICE_SERVERS]
+    if TURN_URL:
+        servers.append(
+            RTCIceServer(
+                urls=[TURN_URL],
+                username=TURN_USERNAME or None,
+                credential=TURN_CREDENTIAL or None,
+            )
+        )
+    return servers
 
 # ─── QR device login ──────────────────────────────────────────────────────────
 # Base URL of the backend (through nginx). The /api/auth/device/* endpoints are
@@ -134,6 +173,79 @@ async def ensure_edge_token() -> str:
     return token
 
 
+def _safe_put_nowait(queue: asyncio.Queue, item) -> None:
+    """put_nowait that drops the item when the queue is full. Runs on the event-loop
+    thread (scheduled via call_soon_threadsafe), where a raised QueueFull would
+    otherwise surface as an unhandled loop exception."""
+    try:
+        queue.put_nowait(item)
+    except asyncio.QueueFull:
+        pass
+
+
+class _CallerAudioTrack(MediaStreamTrack):
+    """Outgoing WebRTC audio track: edge mic (caller audio, 16kHz int16) → kebbi.
+
+    Pulls raw 16kHz mono int16 PCM from ``source_queue`` (fed by the mic callback),
+    resamples to 48kHz, and emits paced 20ms frames. Emits silence when the mic is
+    momentarily idle so the RTP stream stays alive.
+    """
+
+    kind = "audio"
+    SAMPLES = WEBRTC_RATE // 50  # 20ms @ 48kHz = 960 samples
+    # Max source backlog to keep (~32ms per item) before dropping oldest, so the
+    # caller audio stays near-live instead of lagging by the WebRTC setup time.
+    MAX_QUEUED = 5  # ~160ms jitter buffer
+
+    def __init__(self, source_queue: asyncio.Queue):
+        super().__init__()
+        self._queue = source_queue
+        self._resampler = av.AudioResampler(format="s16", layout="mono", rate=WEBRTC_RATE)
+        self._buf = np.zeros(0, dtype=np.int16)
+        self._timestamp = 0
+        self._start = None
+
+    async def recv(self):
+        # Pace output to realtime so RTP timestamps track the wall clock.
+        if self._start is None:
+            self._start = time.time()
+        self._timestamp += self.SAMPLES
+        delay = self._start + self._timestamp / WEBRTC_RATE - time.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+        # Drop stale backlog (e.g. caller audio buffered during the WebRTC
+        # handshake). Consuming at realtime can't catch up, so trim to stay live.
+        while self._queue.qsize() > self.MAX_QUEUED:
+            try:
+                self._queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+        while len(self._buf) < self.SAMPLES:
+            try:
+                data = await asyncio.wait_for(self._queue.get(), timeout=0.1)
+                src = np.frombuffer(data, dtype=np.int16).reshape(1, -1)
+                in_frame = av.AudioFrame.from_ndarray(src, format="s16", layout="mono")
+                in_frame.sample_rate = SAMPLE_RATE
+                for out in self._resampler.resample(in_frame):
+                    self._buf = np.concatenate(
+                        [self._buf, out.to_ndarray().reshape(-1).astype(np.int16)]
+                    )
+            except asyncio.TimeoutError:
+                self._buf = np.concatenate(
+                    [self._buf, np.zeros(self.SAMPLES, dtype=np.int16)]
+                )
+
+        out = self._buf[: self.SAMPLES]
+        self._buf = self._buf[self.SAMPLES :]
+        frame = av.AudioFrame.from_ndarray(out.reshape(1, -1), format="s16", layout="mono")
+        frame.sample_rate = WEBRTC_RATE
+        frame.pts = self._timestamp
+        frame.time_base = fractions.Fraction(1, WEBRTC_RATE)
+        return frame
+
+
 class EdgeClient:
     def __init__(self, token, server_address=SERVER_ADDRESS):
         self.token = token
@@ -153,6 +265,18 @@ class EdgeClient:
         self.loop = None
         # Gates whether mic audio is forwarded; set on incoming_call, cleared on call_end
         self.mic_active = False
+
+        # ─── WebRTC handoff state ───
+        # When True, mic audio goes P2P to kebbi (not to the server), and server
+        # audio_response is ignored. Set on `direct_call`, cleared on call_end.
+        self.webrtc_active = False
+        self.pc: RTCPeerConnection | None = None
+        # Mic frames (16kHz int16 PCM) destined for the outgoing WebRTC track
+        self.webrtc_mic_queue = asyncio.Queue(maxsize=200)
+        # Outbound gRPC signaling messages (SDP offer) to the server
+        self.signal_queue = asyncio.Queue()
+        self.webrtc_consumer_task = None
+        self.webrtc_start_task = None
 
     # ─── Connection ──────────────────────────────────────────────────────────
 
@@ -209,23 +333,39 @@ class EdgeClient:
                 print(f"\n[VAD Error] {e}", flush=True)
 
         if self.loop:
+            # Mic feeds the outgoing WebRTC track during a handoff, otherwise the
+            # gRPC server stream. QueueFull is handled inside _safe_put_nowait since
+            # the put runs on the event-loop thread, not here.
+            queue = self.webrtc_mic_queue if self.webrtc_active else self.audio_input_queue
             try:
-                self.loop.call_soon_threadsafe(
-                    self.audio_input_queue.put_nowait, indata.tobytes()
-                )
-            except asyncio.QueueFull:
-                pass
+                self.loop.call_soon_threadsafe(_safe_put_nowait, queue, indata.tobytes())
+            except RuntimeError:
+                pass  # event loop is shutting down
 
     # ─── gRPC send ───────────────────────────────────────────────────────────
 
     async def request_generator(self):
         while self.running:
+            # WebRTC signaling (SDP offer) takes priority
+            try:
+                if not self.signal_queue.empty():
+                    sig = self.signal_queue.get_nowait()
+                    yield voice_pb2.ClientMessage(signal=sig)
+                    continue
+            except Exception:
+                pass
+
             try:
                 if not self.interrupt_queue.empty():
                     self.interrupt_queue.get_nowait()
                     yield voice_pb2.ClientMessage(interrupt=True)
             except Exception:
                 pass
+
+            if self.webrtc_active:
+                # Audio now flows P2P to kebbi; stop forwarding mic to the server.
+                await asyncio.sleep(0.05)
+                continue
 
             try:
                 chunk = await asyncio.wait_for(self.audio_input_queue.get(), timeout=0.01)
@@ -308,10 +448,25 @@ class EdgeClient:
         try:
             async for response in response_iterator:
                 if response.HasField('audio_response'):
+                    if self.webrtc_active:
+                        continue  # AI stopped; speaker is driven by the WebRTC track
                     if not self.ai_playing:
                         print("\n[Playback] First audio chunk received", flush=True)
                     self.ai_playing = True
                     await self.playback_queue.put(response.audio_response)
+
+                elif response.HasField('signal'):
+                    sig = dict(response.signal)
+                    if sig.get('kind') == 'answer' and self.pc is not None:
+                        try:
+                            await self.pc.setRemoteDescription(
+                                RTCSessionDescription(sdp=sig.get('sdp', ''), type='answer')
+                            )
+                            print("\n[WEBRTC] Applied answer from kebbi", flush=True)
+                        except Exception as e:
+                            print(f"\n[WEBRTC] setRemoteDescription failed: {e}", flush=True)
+                    else:
+                        print(f"\n[WEBRTC] Ignoring signal kind={sig.get('kind')} pc={self.pc is not None}", flush=True)
 
                 elif response.HasField('text_status'):
                     status = dict(response.text_status)
@@ -319,28 +474,27 @@ class EdgeClient:
 
                     if event_type == "incoming_call":
                         caller_phone = status.get("caller_phone", "Private Number")
-                        print(f"\n[CALL] Incoming call from {caller_phone} ({status.get('caller_name', "")}) — starting mic {status.get('metadata', '')}", flush=True)
+                        print(f"\n[CALL] Incoming call from {caller_phone} ({status.get('caller_name', '')}) — starting mic {status.get('metadata', '')}", flush=True)
                         self.mic_active = True
 
                     elif event_type == "call_end":
                         print(f"\n[CALL] {event_type} — stopping mic", flush=True)
+                        await self._stop_webrtc()
                         self.mic_active = False
                         self.running = False
                         break
-                        
+
                     elif event_type == "direct_call":
                         caller_phone = status.get("caller_phone", "")
-                        if self.mic_active:
-                            # User answered mid-call: stop AI playback immediately and hand off
-                            print(f"\n[CALL] User answered — stopping AI playback", flush=True)
-                            self.ai_playing = False
-                            self.playback_stop_event.set()
-                        else:
-                            # Fraud detection disabled: call just started, activate mic for WebRTC
-                            print(f"\n[CALL] Direct call from {caller_phone} — activating mic", flush=True)
-                            self.mic_active = True
-                        self.running = False
-                        # TODO: Implement WebRTC handoff to kebbi
+                        # User answered (or fraud detection disabled): hand the live call
+                        # off to kebbi over WebRTC. Stop the AI and cut the edge↔server
+                        # audio stream both ways; keep the gRPC session open for signaling.
+                        print(f"\n[CALL] direct_call — handing off to WebRTC (caller {caller_phone})", flush=True)
+                        self.ai_playing = False
+                        self.playback_stop_event.set()
+                        self.mic_active = True       # keep capturing mic (routed to WebRTC)
+                        self.webrtc_active = True     # stop gRPC audio; ignore audio_response
+                        self.webrtc_start_task = asyncio.create_task(self._start_webrtc())
 
                     elif event_type == "playback_complete":
                         await self.playback_queue.put(None)
@@ -351,6 +505,7 @@ class EdgeClient:
         except Exception as e:
             print(f"\n[Response Error] {e}", flush=True)
         finally:
+            await self._stop_webrtc()
             playback_task.cancel()
             try:
                 await playback_task
@@ -360,6 +515,125 @@ class EdgeClient:
                 self.output_stream.stop()
                 self.output_stream.close()
                 self.output_stream = None
+
+    # ─── WebRTC handoff ──────────────────────────────────────────────────────
+
+    async def _start_webrtc(self):
+        """Build the peer connection, attach the caller-audio track, and send the
+        SDP offer to the server (which relays it to kebbi)."""
+        pc = None
+        try:
+            # Drain any stale mic frames buffered before the handoff.
+            while not self.webrtc_mic_queue.empty():
+                try:
+                    self.webrtc_mic_queue.get_nowait()
+                except Exception:
+                    break
+
+            pc = RTCPeerConnection(RTCConfiguration(iceServers=build_ice_servers()))
+            self.pc = pc
+            pc.addTrack(_CallerAudioTrack(self.webrtc_mic_queue))
+
+            @pc.on("track")
+            def on_track(track):
+                if track.kind == "audio":
+                    print("\n[WEBRTC] Receiving elder audio from kebbi", flush=True)
+                    self.webrtc_consumer_task = asyncio.create_task(
+                        self._consume_remote_audio(track)
+                    )
+
+            @pc.on("connectionstatechange")
+            async def on_state():
+                state = pc.connectionState
+                print(f"\n[WEBRTC] Connection state: {state}", flush=True)
+                # A peer that fails/closes outside call_end must be torn down, or
+                # webrtc_active stays true and mic audio routes into a dead peer.
+                # ("disconnected" is transient and may recover, so don't act on it.)
+                if state in ("failed", "closed") and self.webrtc_active:
+                    self.webrtc_active = False  # synchronous guard vs. reentrant close()
+                    print("\n[WEBRTC] Peer connection lost — tearing down", flush=True)
+                    await self._stop_webrtc()
+
+            # setLocalDescription waits for ICE gathering to complete (non-trickle),
+            # so localDescription.sdp already carries the candidates.
+            await pc.setLocalDescription(await pc.createOffer())
+
+            # Bail if the call was torn down (call_end) while we were gathering.
+            if not self.webrtc_active or self.pc is not pc:
+                try:
+                    await pc.close()
+                except Exception:
+                    pass
+                if self.pc is pc:
+                    self.pc = None
+                return
+
+            sig = Struct()
+            sig.update({"kind": "offer", "sdp": pc.localDescription.sdp})
+            await self.signal_queue.put(sig)
+            print("\n[WEBRTC] Offer sent to server", flush=True)
+        except asyncio.CancelledError:
+            raise  # _stop_webrtc cancelled us; it will close self.pc
+        except Exception as e:
+            print(f"\n[WEBRTC] _start_webrtc failed: {e}", flush=True)
+            # Fall back cleanly: don't leave the call stuck on a dead WebRTC path.
+            self.webrtc_active = False
+            if pc is not None:
+                try:
+                    await pc.close()
+                except Exception:
+                    pass
+                if self.pc is pc:
+                    self.pc = None
+
+    async def _consume_remote_audio(self, track):
+        """Play kebbi's audio (elder voice) into the output stream → MyCall → caller."""
+        resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
+        write_task = None
+        try:
+            while True:
+                frame = await track.recv()
+                for out in resampler.resample(frame):
+                    arr = out.to_ndarray().reshape(-1).astype(DTYPE)
+                    if self.output_stream is not None:
+                        write_task = asyncio.create_task(asyncio.to_thread(self.output_stream.write, arr))
+                        await write_task
+        except (MediaStreamError, asyncio.CancelledError):
+            pass
+        except Exception as e:
+            print(f"\n[WEBRTC] remote audio error: {e}", flush=True)
+        finally:
+            # Ensure any pending write completes before output_stream is closed
+            if write_task is not None and not write_task.done():
+                try:
+                    await asyncio.shield(write_task)
+                except Exception:
+                    pass
+
+    async def _stop_webrtc(self):
+        self.webrtc_active = False
+        if self.webrtc_start_task and not self.webrtc_start_task.done():
+            self.webrtc_start_task.cancel()
+            try:
+                await self.webrtc_start_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self.webrtc_start_task = None
+        if self.webrtc_consumer_task and not self.webrtc_consumer_task.done():
+            self.webrtc_consumer_task.cancel()
+            try:
+                await self.webrtc_consumer_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                print(f"\n[WEBRTC] remote audio task cleanup error: {e}", flush=True)
+        self.webrtc_consumer_task = None
+        if self.pc is not None:
+            try:
+                await self.pc.close()
+            except Exception:
+                pass
+            self.pc = None
 
     # ─── Entry point ─────────────────────────────────────────────────────────
 
@@ -373,8 +647,18 @@ class EdgeClient:
             self.mic_active = False
             self.ai_playing = False
             self.interrupt_pending = False
+            self.webrtc_active = False
+            self.webrtc_consumer_task = None
+            self.webrtc_start_task = None
+            self.pc = None
             self.playback_stop_event.clear()
-            for q in (self.interrupt_queue, self.audio_input_queue, self.playback_queue):
+            for q in (
+                self.interrupt_queue,
+                self.audio_input_queue,
+                self.playback_queue,
+                self.webrtc_mic_queue,
+                self.signal_queue,
+            ):
                 while not q.empty():
                     try:
                         q.get_nowait()
