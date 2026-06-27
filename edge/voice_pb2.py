@@ -25,7 +25,7 @@ _sym_db = _symbol_database.Default()
 from google.protobuf import struct_pb2 as google_dot_protobuf_dot_struct__pb2
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bvoice.proto\x1a\x1cgoogle/protobuf/struct.proto\"F\n\rClientMessage\x12\x15\n\x0b\x61udio_chunk\x18\x01 \x01(\x0cH\x00\x12\x13\n\tinterrupt\x18\x02 \x01(\x08H\x00\x42\t\n\x07payload\"d\n\rServerMessage\x12\x18\n\x0e\x61udio_response\x18\x01 \x01(\x0cH\x00\x12.\n\x0btext_status\x18\x02 \x01(\x0b\x32\x17.google.protobuf.StructH\x00\x42\t\n\x07payload2=\n\x0cVoiceService\x12-\n\x07Session\x12\x0e.ClientMessage\x1a\x0e.ServerMessage(\x01\x30\x01\x62\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bvoice.proto\x1a\x1cgoogle/protobuf/struct.proto\"q\n\rClientMessage\x12\x15\n\x0b\x61udio_chunk\x18\x01 \x01(\x0cH\x00\x12\x13\n\tinterrupt\x18\x02 \x01(\x08H\x00\x12)\n\x06signal\x18\x03 \x01(\x0b\x32\x17.google.protobuf.StructH\x00\x42\t\n\x07payload\"\x8f\x01\n\rServerMessage\x12\x18\n\x0e\x61udio_response\x18\x01 \x01(\x0cH\x00\x12.\n\x0btext_status\x18\x02 \x01(\x0b\x32\x17.google.protobuf.StructH\x00\x12)\n\x06signal\x18\x03 \x01(\x0b\x32\x17.google.protobuf.StructH\x00\x42\t\n\x07payload2=\n\x0cVoiceService\x12-\n\x07Session\x12\x0e.ClientMessage\x1a\x0e.ServerMessage(\x01\x30\x01\x62\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -33,9 +33,9 @@ _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'voice_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
   _globals['_CLIENTMESSAGE']._serialized_start=45
-  _globals['_CLIENTMESSAGE']._serialized_end=115
-  _globals['_SERVERMESSAGE']._serialized_start=117
-  _globals['_SERVERMESSAGE']._serialized_end=217
-  _globals['_VOICESERVICE']._serialized_start=219
-  _globals['_VOICESERVICE']._serialized_end=280
+  _globals['_CLIENTMESSAGE']._serialized_end=158
+  _globals['_SERVERMESSAGE']._serialized_start=161
+  _globals['_SERVERMESSAGE']._serialized_end=304
+  _globals['_VOICESERVICE']._serialized_start=306
+  _globals['_VOICESERVICE']._serialized_end=367
 # @@protoc_insertion_point(module_scope)

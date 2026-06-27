@@ -136,6 +136,10 @@ class CallEventRequest(BaseModel):
     callee_user_id: str
 
 
+class WebrtcAnswerRequest(BaseModel):
+    sdp: str
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -324,6 +328,45 @@ async def answer_call(
         session = active_sessions.get(x_user_id)
     if session:
         await session.on_user_answer_call()
+    return {"status": "ok"}
+
+
+@app.get("/api/fraud/webrtc/offer")
+async def get_webrtc_offer(
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Fetch the WebRTC SDP offer that the edge device produced after the user
+    answered. Kebbi polls this (with short retry) until the offer is ready."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    async with sessions_lock:
+        session = active_sessions.get(x_user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="No active edge session")
+    if not session.webrtc_offer_sdp:
+        return {"status": "pending"}
+    return {"status": "ready", "sdp": session.webrtc_offer_sdp}
+
+
+@app.post("/api/fraud/webrtc/answer")
+async def post_webrtc_answer(
+    body: WebrtcAnswerRequest,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Receive kebbi's WebRTC SDP answer and relay it to the edge device."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+    # Consume the pending offer atomically so a retried/duplicate answer for the
+    # same negotiation is rejected (a second setRemoteDescription is an invalid
+    # state transition on edge).
+    async with sessions_lock:
+        session = active_sessions.get(x_user_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="No active edge session")
+        if not session.webrtc_offer_sdp:
+            raise HTTPException(status_code=409, detail="No pending WebRTC offer")
+        session.webrtc_offer_sdp = None
+    await session.forward_answer_to_edge(body.sdp)
     return {"status": "ok"}
 
 
