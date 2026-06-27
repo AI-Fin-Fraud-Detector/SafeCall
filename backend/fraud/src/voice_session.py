@@ -54,6 +54,16 @@ class MessageContent(BaseModel):
 
 
 def make_status(type: str, **kwargs) -> Struct:
+    """
+    Build a status payload for gRPC messages.
+    
+    Parameters:
+    	type (str): The status type.
+    	**kwargs: Additional fields to include in the payload.
+    
+    Returns:
+    	Struct: A protobuf struct containing the status data.
+    """
     if "type" in kwargs:
         raise ValueError("Status kwargs cannot contain 'type' key")
     s = Struct()
@@ -62,7 +72,16 @@ def make_status(type: str, **kwargs) -> Struct:
 
 
 def make_signal(kind: str, sdp: str) -> Struct:
-    """Build a WebRTC signaling payload, e.g. {"kind": "answer", "sdp": "..."}."""
+    """
+    Build a WebRTC signaling payload.
+    
+    Parameters:
+    	kind (str): The signaling message kind.
+    	sdp (str): The Session Description Protocol payload.
+    
+    Returns:
+    	Struct: A protobuf struct containing the signaling fields.
+    """
     s = Struct()
     s.update({"kind": kind, "sdp": sdp})
     return s
@@ -72,6 +91,9 @@ class _Session:
     """All state for a single gRPC Session call. One instance per connected edge device."""
 
     def __init__(self, user_uuid: str, db_pool, redis_client):
+        """
+        Initialize session state for a single gRPC voice call.
+        """
         self.user_uuid = user_uuid
         self.db_pool = db_pool
         self.redis_client = redis_client
@@ -178,6 +200,13 @@ class _Session:
         print(f"[SESSION] direct_call → user={self.user_uuid}", flush=True)
 
     async def on_call_end(self, event_type: str):
+        """
+        Ends the current call session and records its duration.
+        
+        Parameters:
+        	event_type (str): The status type to send to the edge.
+        
+        """
         self.call_active.clear()
         self.webrtc_offer_sdp = None
         self._cancel_current_task()
@@ -387,6 +416,11 @@ class _Session:
             print(f"[CONN] Session closed: user={self.user_uuid}\n", flush=True)
 
     async def _handle_requests(self, request_iterator):
+        """
+        Processes incoming edge events for the session.
+        
+        Handles interrupt events by canceling active work and resetting session state, feeds audio chunks into the STT recorder while the call is active, and caches valid WebRTC offer SDPs from signal messages.
+        """
         stt_task = None
         try:
             print("[DEBUG] Entering request handler loop...", flush=True)
@@ -719,6 +753,11 @@ class _Session:
         self.call_ended.set()
 
     async def on_user_answer_call(self):
+        """
+        Handle the user answering an incoming call.
+        
+        Clears the active-call state, drops any cached WebRTC offer, and notifies the edge device that the session has become a direct call.
+        """
         if self.ssci_action_task and not self.ssci_action_task.done():
             self.ssci_action_task.cancel()
         self._cancel_current_task()
@@ -749,6 +788,16 @@ class _Session:
     # ─── LLM + TTS ───────────────────────────────────────────────────────────
 
     async def _process_and_respond(self, text: str, is_append: bool = False):
+        """
+        Generate an assistant reply for the latest user text and stream the result.
+        
+        Processes the user message, stores the assistant response, enqueues a response status, starts fraud detection, and streams the reply as audio.
+        
+        Parameters:
+        	text (str): The recognized user transcript.
+        	is_append (bool): Whether the text should be merged into the most recent user message.
+        
+        """
         try:
             from openai import AsyncOpenAI
 

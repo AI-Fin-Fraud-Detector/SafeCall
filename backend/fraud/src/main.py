@@ -321,7 +321,12 @@ async def call_end(
 async def answer_call(
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
-    """User answered the call."""
+    """
+    Marks the active call as answered for the authenticated user.
+    
+    Returns:
+        dict[str, str]: A status response with ``"ok"`` when the call is marked as answered.
+    """
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     async with sessions_lock:
@@ -335,8 +340,13 @@ async def answer_call(
 async def get_webrtc_offer(
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
-    """Fetch the WebRTC SDP offer that the edge device produced after the user
-    answered. Kebbi polls this (with short retry) until the offer is ready."""
+    """
+    Retrieve the pending WebRTC SDP offer for the active session.
+    
+    Returns:
+        dict: A status payload with ``"pending"`` when no offer is ready, or
+        ``"ready"`` and the SDP string when an offer is available.
+    """
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     async with sessions_lock:
@@ -353,7 +363,15 @@ async def post_webrtc_answer(
     body: WebrtcAnswerRequest,
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
-    """Receive kebbi's WebRTC SDP answer and relay it to the edge device."""
+    """
+    Receive a WebRTC SDP answer and forward it to the active edge session.
+    
+    Parameters:
+    	body (WebrtcAnswerRequest): The answer payload containing the SDP.
+    
+    Returns:
+    	dict: A response with status set to "ok".
+    """
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     # Consume the pending offer atomically so a retried/duplicate answer for the
@@ -376,6 +394,16 @@ async def get_conversations(
     before: str | None = None,
     limit: int = 50,
 ):
+    """
+    List the user's phone conversations in reverse chronological order.
+    
+    Parameters:
+        before (str | None): Cursor conversation ID; returns conversations created before that conversation.
+        limit (int): Maximum number of conversations to return.
+    
+    Returns:
+        dict: A mapping containing the conversation list and the next cursor, if more results are available.
+    """
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     if limit < 1 or limit > 200:

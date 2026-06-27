@@ -53,8 +53,12 @@ WEBRTC_RATE = 48000  # WebRTC/Opus works at 48kHz; edge audio I/O is 16kHz
 
 
 def build_ice_servers() -> list[RTCIceServer]:
-    """ICE servers for the peer connection: anonymous STUN entries plus an
-    optional authenticated TURN relay carrying its credentials as separate fields."""
+    """
+    Build the ICE server list for the peer connection.
+    
+    Returns:
+    	list[RTCIceServer]: ICE servers from the configured STUN entries, plus an authenticated TURN server when configured.
+    """
     servers = [RTCIceServer(urls=[u]) for u in ICE_SERVERS]
     if TURN_URL:
         servers.append(
@@ -145,10 +149,13 @@ async def pair_device() -> str:
 
 
 async def ensure_edge_token() -> str:
-    """Return an access token for the edge device.
-
-    Resolution order: EDGE_TOKEN env var > cached token file > QR pairing.
-    A token obtained via pairing is cached so the device stays logged in.
+    """
+    Resolve the edge device access token.
+    
+    Uses the environment token first, then a cached token file, and falls back to QR-based pairing. A token obtained through pairing is saved for later use.
+    
+    Returns:
+    	token (str): The access token for the edge device.
     """
     if EDGE_TOKEN:
         print("[Auth] Using EDGE_TOKEN from environment.", flush=True)
@@ -174,9 +181,11 @@ async def ensure_edge_token() -> str:
 
 
 def _safe_put_nowait(queue: asyncio.Queue, item) -> None:
-    """put_nowait that drops the item when the queue is full. Runs on the event-loop
-    thread (scheduled via call_soon_threadsafe), where a raised QueueFull would
-    otherwise surface as an unhandled loop exception."""
+    """
+    Attempt to enqueue an item without raising when the queue is full.
+    
+    Drops the item if the queue has reached capacity.
+    """
     try:
         queue.put_nowait(item)
     except asyncio.QueueFull:
@@ -198,6 +207,12 @@ class _CallerAudioTrack(MediaStreamTrack):
     MAX_QUEUED = 5  # ~160ms jitter buffer
 
     def __init__(self, source_queue: asyncio.Queue):
+        """
+        Create an outgoing WebRTC audio track backed by a PCM queue.
+        
+        Parameters:
+        	source_queue (asyncio.Queue): Queue containing 16 kHz mono PCM audio chunks.
+        """
         super().__init__()
         self._queue = source_queue
         self._resampler = av.AudioResampler(format="s16", layout="mono", rate=WEBRTC_RATE)
@@ -207,6 +222,12 @@ class _CallerAudioTrack(MediaStreamTrack):
 
     async def recv(self):
         # Pace output to realtime so RTP timestamps track the wall clock.
+        """
+        Return the next 20 ms WebRTC audio frame for the caller track.
+        
+        Returns:
+        	av.AudioFrame: A mono 48 kHz PCM frame paced to real time.
+        """
         if self._start is None:
             self._start = time.time()
         self._timestamp += self.SAMPLES
@@ -248,6 +269,13 @@ class _CallerAudioTrack(MediaStreamTrack):
 
 class EdgeClient:
     def __init__(self, token, server_address=SERVER_ADDRESS):
+        """
+        Initialize the edge client state.
+        
+        Parameters:
+        	token (str): Access token used to authenticate the gRPC session.
+        	server_address (str): Address of the voice server.
+        """
         self.token = token
         self.server_address = server_address
         self.channel = None
@@ -281,6 +309,9 @@ class EdgeClient:
     # ─── Connection ──────────────────────────────────────────────────────────
 
     async def connect(self):
+        """
+        Create the gRPC channel and service stub for the configured server.
+        """
         print(f"Connecting to {self.server_address}...")
         self.channel = grpc.aio.insecure_channel(self.server_address)
         self.stub = voice_pb2_grpc.VoiceServiceStub(self.channel)
@@ -305,6 +336,15 @@ class EdgeClient:
         print("VAD loaded.")
 
     def audio_callback(self, indata, frames, time, status):
+        """
+        Handle microphone input, detect barge-in speech, and route audio to the active outbound queue.
+        
+        Parameters:
+            indata: Captured microphone audio for the current callback invocation.
+            frames: Number of captured frames.
+            time: Timing information for the audio callback.
+            status: Input stream status for the current callback invocation.
+        """
         if status:
             print(f"\n[Mic Status] {status}", flush=True)
             return
@@ -345,6 +385,12 @@ class EdgeClient:
     # ─── gRPC send ───────────────────────────────────────────────────────────
 
     async def request_generator(self):
+        """
+        Yield outbound client messages for the active session.
+        
+        Priority is given to pending WebRTC signaling messages, then interrupt
+        notifications, then microphone audio when WebRTC handoff is inactive.
+        """
         while self.running:
             # WebRTC signaling (SDP offer) takes priority
             try:
@@ -437,6 +483,11 @@ class EdgeClient:
     # ─── gRPC receive ─────────────────────────────────────────────────────────
 
     async def response_handler(self, response_iterator):
+        """
+        Handle server responses for playback, call state, and WebRTC signaling.
+        
+        Processes incoming audio, signal, and text status messages from the session stream. Audio is queued for local playback until a WebRTC handoff is active, signaling answers are applied to the active peer connection, and call status events update microphone, playback, and session state.
+        """
         self.output_stream = sd.OutputStream(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
@@ -519,8 +570,12 @@ class EdgeClient:
     # ─── WebRTC handoff ──────────────────────────────────────────────────────
 
     async def _start_webrtc(self):
-        """Build the peer connection, attach the caller-audio track, and send the
-        SDP offer to the server (which relays it to kebbi)."""
+        """
+        Establish a WebRTC peer connection for the direct-call handoff and send an offer to the server.
+        
+        Drains any buffered microphone audio from the handoff queue, creates the peer connection, attaches the caller audio track, and starts receiving the remote audio track when available. If the connection is torn down while ICE gathering is in progress, the peer connection is closed without sending an offer.
+        
+        """
         pc = None
         try:
             # Drain any stale mic frames buffered before the handoff.
@@ -536,6 +591,12 @@ class EdgeClient:
 
             @pc.on("track")
             def on_track(track):
+                """
+                Handle incoming WebRTC audio tracks.
+                
+                Parameters:
+                	track: The remote media track received from the peer connection.
+                """
                 if track.kind == "audio":
                     print("\n[WEBRTC] Receiving elder audio from kebbi", flush=True)
                     self.webrtc_consumer_task = asyncio.create_task(
@@ -544,6 +605,9 @@ class EdgeClient:
 
             @pc.on("connectionstatechange")
             async def on_state():
+                """
+                Tears down the WebRTC handoff when the peer connection fails or closes.
+                """
                 state = pc.connectionState
                 print(f"\n[WEBRTC] Connection state: {state}", flush=True)
                 # A peer that fails/closes outside call_end must be torn down, or
@@ -587,7 +651,12 @@ class EdgeClient:
                     self.pc = None
 
     async def _consume_remote_audio(self, track):
-        """Play kebbi's audio (elder voice) into the output stream → MyCall → caller."""
+        """
+        Play remote WebRTC audio into the local output stream.
+        
+        Parameters:
+        	track: Incoming WebRTC audio track from the remote peer.
+        """
         resampler = av.AudioResampler(format="s16", layout="mono", rate=SAMPLE_RATE)
         write_task = None
         try:
@@ -611,6 +680,11 @@ class EdgeClient:
                     pass
 
     async def _stop_webrtc(self):
+        """
+        Tears down the WebRTC handoff state.
+        
+        Cancels any pending setup and remote-audio tasks, closes the peer connection, and clears the active WebRTC state.
+        """
         self.webrtc_active = False
         if self.webrtc_start_task and not self.webrtc_start_task.done():
             self.webrtc_start_task.cancel()
@@ -638,6 +712,12 @@ class EdgeClient:
     # ─── Entry point ─────────────────────────────────────────────────────────
 
     async def run(self):
+        """
+        Run the edge client event loop and manage call sessions.
+        
+        Resets per-call state, loads VAD, starts microphone capture, and waits for gRPC session events. The loop continues until the client is stopped.
+        
+        """
         self.loop = asyncio.get_running_loop()
         await self.connect()
 
