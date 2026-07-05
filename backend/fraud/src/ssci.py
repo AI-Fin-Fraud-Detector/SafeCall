@@ -10,6 +10,7 @@ from .const import (
     ETA,
     SSCI_PRIOR_W_MAX,
     SSCI_IDENTITY_PRIOR,
+    SSCI_SCAM_THRESHOLDS,
     CALLER_TYPE_NON_CONTACT,
 )
 
@@ -98,6 +99,9 @@ def compute_ssci(trigger_results: list[bool], caller_type: str | None = None) ->
     confidence = (1.0 - prior_weight) * raw_confidence + prior_weight * prior
 
     scam_probability = confidence if y_k else (1.0 - confidence)
+    scam_threshold = SSCI_SCAM_THRESHOLDS.get(
+        caller_type, SSCI_SCAM_THRESHOLDS[CALLER_TYPE_NON_CONTACT]
+    )
 
     return {
         "available": True,
@@ -116,4 +120,5 @@ def compute_ssci(trigger_results: list[bool], caller_type: str | None = None) ->
         "confidence": round(confidence, 7),
         "decision_label": "scam" if y_k else "normal",
         "scam_probability": round(scam_probability, 7),
+        "scam_threshold": scam_threshold,
     }

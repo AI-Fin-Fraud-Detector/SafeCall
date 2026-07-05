@@ -38,8 +38,17 @@ SSCI_IDENTITY_PRIOR = {
     CALLER_TYPE_PRIVATE: {0: 0.2, 1: 0.8},      # unknown / suspicious
 }
 
-SSCI_SCAM_THRESHOLD = 0.65
-SSCI_MAX_DURATION_SECONDS = 60   # minimum call age before SSCI action can fire
+# Per-identity scam decision thresholds (scam_probability > threshold → fraud alert).
+# Compensates the Phase 4 identity prior: the prior suppresses a contact's scam
+# probability, so contacts alarm at a lower bar; a private caller's probability is
+# already boosted by the prior, so it needs a higher bar. None / unrecognized
+# caller_type falls back to the non_contact threshold.
+SSCI_SCAM_THRESHOLDS = {
+    CALLER_TYPE_CONTACT: 0.40,
+    CALLER_TYPE_NON_CONTACT: 0.50,
+    CALLER_TYPE_PRIVATE: 0.55,
+}
+SSCI_MAX_DURATION_SECONDS = 120   # minimum call age before SSCI action can fire
 SSCI_SCAM_GRACE_SECONDS = 30
 SSCI_SCAM_WAIT_SECONDS = 90
 SSCI_SAFE_WAIT_SECONDS = 180
