@@ -402,7 +402,7 @@ Sent by: fraud detection session once per call when `scam_probability` exceeds t
   "type": "fraud_alert",
   "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
   "scam_probability": 0.75,
-  "ssci": { "trigger_index": 1, ... }
+  "ssci": { "trigger_index": 1, "caller_type": "private", "scam_threshold": 0.55, ... }
 }
 ```
 
@@ -428,7 +428,7 @@ Sent by: fraud detection session once per call when `scam_probability` does not 
   "type": "safe_to_answer",
   "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
   "scam_probability": 0.20,
-  "ssci": { "trigger_index": 1, ... }
+  "ssci": { "trigger_index": 1, "caller_type": "contact", "scam_threshold": 0.4, ... }
 }
 ```
 

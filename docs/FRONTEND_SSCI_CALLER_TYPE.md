@@ -32,7 +32,7 @@
 
 - `ssci_update`：每 3 輪對話一次（約每 6 句話），不是固定秒數。
 - `fraud_alert` / `safe_to_answer`：整通電話只發一次 —— 通話滿 120 秒後的第一個 SSCI 觸發點。
-- **第一次 `ssci_update` 到達前，前端拿不到 `caller_type` 和 `scam_threshold`** → 這段期間隱藏身分標籤與警戒線即可，UI 必須 null-safe。
+- **第一次收到任何帶 `ssci` 的推播前，前端拿不到 `caller_type` 和 `scam_threshold`** → 這段期間隱藏身分標籤與警戒線即可，UI 必須 null-safe（三種推播型別都要）。
 
 ## 要修改的檔案
 
@@ -71,11 +71,16 @@ final double? scamThreshold;   // 0.4 | 0.5 | 0.55
 
 1. **不要在前端寫死 0.40 / 0.50 / 0.55。** 一律讀 payload 的 `scam_threshold`，後端調參前端自動跟上。
 2. **不要用「分數超過警戒線」自行觸發警報 UI。** 進警報狀態的唯一依據仍是 `fraud_alert` 推播——分數可能超線但後端尚未發警報（例如通話還沒滿 120 秒），兩邊自行判斷會不同步。警戒線純粹是視覺參考。
+3. **第一個觸發點的分數不顯示，從第二個開始才顯示。** 第一個觸發點是冷啟動（agreement、stability 都是中性 0.5、證據量低，分數主要由身分先驗主導），參考價值低。
+   - 實作方式：判斷 `ssci` payload 裡的 **`trigger_index >= 2`** 才顯示分數／分數條，**不要自己數收到幾次推播**（漏收推播或中途重進頁面會數錯，`trigger_index` 是後端給的絕對序號，天然防呆）。
+   - `trigger_index == 1` 期間的 UI 表現＝「尚未收到資料」的狀態（不顯示分數；標籤與警戒線照上面「推播頻率／時機」的 null-safe 規則處理即可）。
+   - 邊界情況：若 `fraud_alert` / `safe_to_answer` 在 `trigger_index == 1` 就到達（對話節奏慢時可能發生），**警報／安全 UI 仍要正常切換**（那是後端的最終判斷），只是分數面板依本規則暫不顯示。
 
 ## 驗收清單
 
 - [ ] 三種身分的來電，面板顯示正確標籤
 - [ ] 警戒線位置隨身分變化（40 / 50 / 55）
 - [ ] 第一次 SSCI 更新前（無資料）UI 正常、不顯示標籤與線
+- [ ] `trigger_index == 1` 的分數不顯示，`trigger_index >= 2` 才開始顯示
 - [ ] `fraud_alert` / `safe_to_answer` 後，警報／安全畫面上仍能顯示身分與警戒線
-- [ ] 收到 `fraud_alert` 時警報 UI 行為與現在一致
+- [ ] 收到 `fraud_alert` 時警報 UI 行為與現在一致（即使發生在 `trigger_index == 1`）
