@@ -20,7 +20,6 @@ from .const import (
     TEMPERATURE,
     TOP_P,
     INFERENCES_PER_TRIGGER,
-    SSCI_SCAM_THRESHOLD,
     SSCI_MAX_DURATION_SECONDS,
     SSCI_SCAM_GRACE_SECONDS,
     SSCI_SCAM_WAIT_SECONDS,
@@ -665,7 +664,7 @@ class _Session:
                 scam_prob = ssci.get("scam_probability", 0.5)
                 self.scam_probability = scam_prob  # Update current score
                 await self._update_conversation_metadata(scam_prob)
-                if scam_prob > SSCI_SCAM_THRESHOLD:
+                if scam_prob > ssci["scam_threshold"]:
                     self.ssci_action_task = asyncio.create_task(
                         self._handle_scam_detected(scam_prob, ssci)
                     )

@@ -376,7 +376,7 @@ Sent by: fraud detection session whenever SSCI is computed (trigger boundary).
   "type": "ssci_update",
   "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
   "message_id": "660e8400-e29b-41d4-a716-446655440000",
-  "ssci": { "trigger_index": 1, "scam_probability": 0.15, ... }
+  "ssci": { "trigger_index": 1, "scam_probability": 0.15, "caller_type": "non_contact", "scam_threshold": 0.5 }
 }
 ```
 
@@ -388,7 +388,7 @@ Sent by: fraud detection session whenever SSCI is computed (trigger boundary).
 
 ### 7. `fraud_alert`
 
-Sent by: fraud detection session once per call when `scam_probability > 0.6`.
+Sent by: fraud detection session once per call when `scam_probability` exceeds the per-identity threshold (`ssci.scam_threshold`: contact 0.40 / non_contact 0.50 / private 0.55).
 
 | Field | Value |
 |---|---|
@@ -402,7 +402,7 @@ Sent by: fraud detection session once per call when `scam_probability > 0.6`.
   "type": "fraud_alert",
   "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
   "scam_probability": 0.75,
-  "ssci": { "trigger_index": 1, ... }
+  "ssci": { "trigger_index": 1, "scam_probability": 0.75, "caller_type": "private", "scam_threshold": 0.55 }
 }
 ```
 
@@ -414,7 +414,7 @@ Sent by: fraud detection session once per call when `scam_probability > 0.6`.
 
 ### 8. `safe_to_answer`
 
-Sent by: fraud detection session once per call when `scam_probability < 0.6`.
+Sent by: fraud detection session once per call when `scam_probability` does not exceed the per-identity threshold (`ssci.scam_threshold`: contact 0.40 / non_contact 0.50 / private 0.55).
 
 | Field | Value |
 |---|---|
@@ -428,7 +428,7 @@ Sent by: fraud detection session once per call when `scam_probability < 0.6`.
   "type": "safe_to_answer",
   "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
   "scam_probability": 0.20,
-  "ssci": { "trigger_index": 1, ... }
+  "ssci": { "trigger_index": 1, "scam_probability": 0.20, "caller_type": "contact", "scam_threshold": 0.4 }
 }
 ```
 
