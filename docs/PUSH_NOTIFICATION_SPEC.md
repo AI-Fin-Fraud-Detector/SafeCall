@@ -189,7 +189,8 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
   "detail": {
     "phone_number": "+886912345678",
     "caller_name": "Alice",
-    "conversation_id": "550e8400-e29b-41d4-a716-446655440000"
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "caller_type": "contact"
   }
 }
 ```
@@ -200,6 +201,7 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
 | `detail.phone_number` | string | Caller's phone number. Empty string `""` means private / no caller ID |
 | `detail.caller_name` | string \| null | Caller's name from the host's contact book. `null` if not saved or private number |
 | `detail.conversation_id` | string (UUID) | The conversation created for this call. Use this to subscribe to real-time message pushes and to fetch the transcript |
+| `detail.caller_type` | `"contact"` \| `"non_contact"` \| `"private"` | Backend caller classification based on saved contacts and caller-id visibility |
 
 **Expected behaviour**
 
@@ -226,7 +228,11 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
 {
   "type": "incoming_call",
   "detail": {
-    "phone_number": "+886912345678"
+    "phone_number": "+886912345678",
+    "caller_name": "Alice",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "caller_type": "contact",
+    "call_token": "abc123..."
   }
 }
 ```
@@ -235,8 +241,12 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
 |---|---|---|
 | `type` | `"incoming_call"` | Notification type identifier |
 | `detail.phone_number` | string | Caller's phone number. Empty string `""` means private / no caller ID |
+| `detail.caller_name` | string \| null | Caller display name if available |
+| `detail.conversation_id` | string (UUID) | Conversation ID created for this call |
+| `detail.caller_type` | `"contact"` \| `"non_contact"` \| `"private"` | Backend caller classification |
+| `detail.call_token` | string | One-time token for `POST /api/fraud/call/connect` (not consumed when backend returns 409) |
 
-> **Note:** No `conversation_id` or `caller_name` is included because no AI session is started. No real-time transcript pushes will follow.
+> **Note:** In direct-call mode there is no AI transcript stream, but `conversation_id` is still provided for call metadata/history and `call_token` is provided for one-time call connection.
 
 **Expected behaviour**
 

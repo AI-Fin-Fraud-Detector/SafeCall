@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import secrets
 import uuid
 from typing import Dict, Optional
@@ -11,6 +12,14 @@ import redis.asyncio as redis
 pool: asyncpg.Pool | None = None
 # Redis client instance
 redis_client: redis.Redis | None = None
+PHONE_DIGIT_RE = re.compile(r"\D+")
+
+
+def normalize_phone_number(phone_number: str) -> str:
+    normalized = PHONE_DIGIT_RE.sub("", phone_number or "")
+    if normalized.startswith("886") and len(normalized) == 12:
+        return f"0{normalized[3:]}"
+    return normalized
 
 
 async def _init_connection(conn: asyncpg.Connection):
@@ -102,7 +111,10 @@ async def get_user_latest_conversation(
 
 
 async def create_conversation(
-    user_uuid: str, caller_phone_number: str, caller_name: str | None
+    user_uuid: str,
+    caller_phone_number: str,
+    caller_name: str | None,
+    caller_type: str,
 ) -> str:
     """Creates a new conversation and adds the system message."""
     if pool is None:
@@ -116,7 +128,11 @@ async def create_conversation(
             """,
             conversation_id,
             uuid.UUID(user_uuid),
-            {"caller_phone_number": caller_phone_number, "caller_name": caller_name},
+            {
+                "caller_phone_number": caller_phone_number,
+                "caller_name": caller_name,
+                "caller_type": caller_type,
+            },
         )
         print(f"[INFO] Created new conversation {conversation_id} for user {user_uuid}")
         # await add_message(str(conversation_id), "system", SYSTEM_PROMPT) # Use imported SYSTEM_PROMPT
@@ -166,7 +182,14 @@ async def is_fraud_detection_enabled(user_uuid: str) -> bool:
         return result
 
 
-async def set_call_token(caller_id: str, callee_id: str, expiration_seconds: int = 60):
+async def set_call_token(
+    caller_id: str,
+    callee_id: str,
+    conversation_id: str,
+    caller_name: str | None = None,
+    caller_type: str | None = None,
+    expiration_seconds: int = 60,
+):
     """Sets a call token for a user in Redis with an expiration time."""
     if redis_client is None:
         raise Exception("Redis client is not initialized.")
@@ -178,8 +201,66 @@ async def set_call_token(caller_id: str, callee_id: str, expiration_seconds: int
             {
                 "caller": caller_id,
                 "callee": callee_id,
+                "conversation_id": conversation_id,
+                "caller_name": caller_name,
+                "caller_type": caller_type,
             }
         ),
         ex=expiration_seconds,
     )
     return token
+
+
+async def consume_call_token(token: str) -> Optional[Dict]:
+    """Gets and consumes a call token once."""
+    if redis_client is None:
+        raise Exception("Redis client is not initialized.")
+
+    raw = await redis_client.getdel(f"call_token:{token}")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
+async def get_call_token(token: str) -> Optional[Dict]:
+    """Gets a call token payload without consuming it."""
+    if redis_client is None:
+        raise Exception("Redis client is not initialized.")
+
+    raw = await redis_client.get(f"call_token:{token}")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
+async def get_contact_by_phone(user_uuid: str, phone_number: str) -> Optional[Dict]:
+    """Find a contact by normalized phone number for a specific user."""
+    if pool is None:
+        raise Exception("Database connection pool is not initialized.")
+
+    normalized_phone_number = normalize_phone_number(phone_number)
+    if not normalized_phone_number:
+        return None
+
+    async with pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, phone_number, normalized_phone_number
+                FROM contacts
+                WHERE user_uuid = $1 AND normalized_phone_number = $2
+                LIMIT 1
+                """,
+                uuid.UUID(user_uuid),
+                normalized_phone_number,
+            )
+        except asyncpg.UndefinedTableError:
+            return None
+        if not row:
+            return None
+        return {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "phone_number": row["phone_number"],
+            "normalized_phone_number": row["normalized_phone_number"],
+        }

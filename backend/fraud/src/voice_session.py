@@ -190,10 +190,23 @@ class _Session:
         )
         print(f"[SESSION] incoming_call → user={self.user_uuid}", flush=True)
 
-    async def on_direct_call(self, conversation_id: str, caller_phone: str = ""):
+    async def on_direct_call(
+        self,
+        conversation_id: str,
+        caller_phone: str = "",
+        caller_name: str | None = None,
+    ):
+        self.conversation_id = conversation_id
+        self.caller_phone = caller_phone
+        self.caller_name = caller_name
         await self.response_queue.put(
             voice_pb2.ServerMessage(
-                text_status=make_status("direct_call", caller_phone=caller_phone)
+                text_status=make_status(
+                    "direct_call",
+                    caller_phone=caller_phone,
+                    caller_name=caller_name,
+                    metadata={"conversation_id": conversation_id},
+                )
             )
         )
         print(f"[SESSION] direct_call → user={self.user_uuid}", flush=True)

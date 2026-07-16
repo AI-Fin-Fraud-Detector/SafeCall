@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from .db_manager import database
 from .notifications import send_push, NotificationPayload
 from .voice_session import _Session
+from .const import CALLER_TYPE_CONTACT, CALLER_TYPE_NON_CONTACT, CALLER_TYPE_PRIVATE
 
 from .protos import voice_pb2_grpc
 
@@ -140,6 +141,10 @@ class WebrtcAnswerRequest(BaseModel):
     sdp: str
 
 
+class ConnectCallRequest(BaseModel):
+    call_token: str
+
+
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 
@@ -186,6 +191,14 @@ async def call_fraud_detection_api(conversation_text: str) -> Optional[bool]:
     return None
 
 
+def detect_caller_type(caller_phone_number: str, is_known_contact: bool) -> str:
+    if not caller_phone_number:
+        return CALLER_TYPE_PRIVATE
+    if is_known_contact:
+        return CALLER_TYPE_CONTACT
+    return CALLER_TYPE_NON_CONTACT
+
+
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 
 
@@ -203,16 +216,31 @@ async def incoming_call(
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
 
-    caller_phone_number = body.phone_number
-    conversation_id = await database.create_conversation(x_user_id, caller_phone_number, body.caller_name)
+    caller_phone_number = body.phone_number.strip()
+    contact = await database.get_contact_by_phone(x_user_id, caller_phone_number)
+    is_known_contact = contact is not None
+    resolved_caller_name = body.caller_name or (contact["name"] if contact else None)
+    caller_type = detect_caller_type(caller_phone_number, is_known_contact)
+
+    conversation_id = await database.create_conversation(
+        x_user_id,
+        caller_phone_number,
+        resolved_caller_name,
+        caller_type,
+    )
 
     is_fraud_detection_enabled = await database.is_fraud_detection_enabled(x_user_id)
+    should_use_fraud_detection = is_fraud_detection_enabled and not is_known_contact
 
-    if is_fraud_detection_enabled:
+    if should_use_fraud_detection:
         async with sessions_lock:
             session = active_sessions.get(x_user_id)
         if session:
-            await session.on_incoming_call(conversation_id, body.phone_number, body.caller_name)
+            await session.on_incoming_call(
+                conversation_id,
+                caller_phone_number,
+                resolved_caller_name,
+            )
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
 
@@ -225,8 +253,9 @@ async def incoming_call(
                     "type": "incoming_call",
                     "detail": {
                         "phone_number": caller_phone_number,
-                        "caller_name": body.caller_name,
+                        "caller_name": resolved_caller_name,
                         "conversation_id": conversation_id,
+                        "caller_type": caller_type,
                     },
                 },
                 silent=False,
@@ -234,14 +263,29 @@ async def incoming_call(
             app="kebbi",
         )
 
-        return {"status": "ok", "fraud_detection": "enabled"}
+        return {
+            "status": "ok",
+            "fraud_detection": "enabled",
+            "conversation_id": conversation_id,
+            "caller_type": caller_type,
+        }
 
     else:
-        call_token = await database.set_call_token(caller_phone_number, x_user_id)
+        call_token = await database.set_call_token(
+            caller_phone_number,
+            x_user_id,
+            conversation_id,
+            resolved_caller_name,
+            caller_type,
+        )
         async with sessions_lock:
             session = active_sessions.get(x_user_id)
         if session:
-            await session.on_direct_call(conversation_id, body.phone_number)
+            await session.on_direct_call(
+                conversation_id,
+                caller_phone_number,
+                resolved_caller_name,
+            )
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
 
@@ -254,6 +298,10 @@ async def incoming_call(
                     "type": "incoming_call",
                     "detail": {
                         "phone_number": caller_phone_number,
+                        "caller_name": resolved_caller_name,
+                        "conversation_id": conversation_id,
+                        "caller_type": caller_type,
+                        "call_token": call_token,
                     },
                 },
                 silent=True,
@@ -261,7 +309,61 @@ async def incoming_call(
             ),
             app="kebbi",
         )
-        return {"status": "ok", "fraud_detection": "disabled", "call_token": call_token}
+        return {
+            "status": "ok",
+            "fraud_detection": "disabled",
+            "call_token": call_token,
+            "conversation_id": conversation_id,
+            "caller_type": caller_type,
+            "is_known_contact": is_known_contact,
+        }
+
+
+@app.post("/api/fraud/call/connect")
+async def connect_direct_call(
+    body: ConnectCallRequest,
+    x_user_id: str | None = Header(None, alias="X-User-Id"),
+):
+    """Consumes a call token and ensures edge receives a direct-call event."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
+
+    token_data = await database.get_call_token(body.call_token)
+    if token_data is None:
+        raise HTTPException(status_code=404, detail="Invalid or expired call token")
+
+    if token_data.get("callee") != x_user_id:
+        raise HTTPException(status_code=403, detail="Call token does not belong to this user")
+
+    conversation_id = token_data.get("conversation_id")
+    caller_phone = token_data.get("caller", "")
+    caller_name = token_data.get("caller_name")
+
+    if not isinstance(conversation_id, str) or not conversation_id:
+        raise HTTPException(status_code=400, detail="Call token data is incomplete")
+
+    async with sessions_lock:
+        session = active_sessions.get(x_user_id)
+    if not session:
+        raise HTTPException(
+            status_code=409,
+            detail="No active edge session. Keep call token and retry.",
+        )
+
+    consumed_data = await database.consume_call_token(body.call_token)
+    if consumed_data is None:
+        raise HTTPException(status_code=404, detail="Invalid or expired call token")
+
+    await session.on_direct_call(conversation_id, caller_phone, caller_name)
+
+    return {
+        "status": "ok",
+        "conversation_id": conversation_id,
+        "caller_phone": caller_phone,
+        "caller_name": caller_name,
+        "caller_type": token_data.get("caller_type"),
+        "edge_session_ready": True,
+    }
 
 
 @app.get("/api/fraud/active-call")
@@ -299,6 +401,8 @@ async def call_end(
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
     """Call has ended; edge should stop."""
+    if not x_user_id:
+        raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     async with sessions_lock:
         session = active_sessions.get(x_user_id)
     if session:
