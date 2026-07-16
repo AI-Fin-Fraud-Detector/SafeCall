@@ -16,6 +16,16 @@ PHONE_DIGIT_RE = re.compile(r"\D+")
 
 
 def normalize_phone_number(phone_number: str) -> str:
+    """Normalize a phone number to its digit-only representation.
+    
+    Converts numbers beginning with `886` and containing 12 digits to the corresponding local format beginning with `0`.
+    
+    Parameters:
+        phone_number (str): The phone number to normalize.
+    
+    Returns:
+        str: The normalized phone number.
+    """
     normalized = PHONE_DIGIT_RE.sub("", phone_number or "")
     if normalized.startswith("886") and len(normalized) == 12:
         return f"0{normalized[3:]}"
@@ -23,6 +33,9 @@ def normalize_phone_number(phone_number: str) -> str:
 
 
 async def _init_connection(conn: asyncpg.Connection):
+    """
+    Configure the PostgreSQL connection to encode and decode JSONB values as JSON.
+    """
     await conn.set_type_codec(
         "jsonb",
         encoder=json.dumps,
@@ -116,7 +129,18 @@ async def create_conversation(
     caller_name: str | None,
     caller_type: str,
 ) -> str:
-    """Creates a new conversation and adds the system message."""
+    """
+    Create a phone conversation for a user with caller metadata.
+    
+    Parameters:
+        user_uuid (str): UUID of the user associated with the conversation.
+        caller_phone_number (str): Phone number of the caller.
+        caller_name (str | None): Optional name of the caller.
+        caller_type (str): Type of caller.
+    
+    Returns:
+        str: The identifier of the newly created conversation.
+    """
     if pool is None:
         raise Exception("Database connection pool is not initialized.")
     async with pool.acquire() as conn:
@@ -190,7 +214,17 @@ async def set_call_token(
     caller_type: str | None = None,
     expiration_seconds: int = 60,
 ):
-    """Sets a call token for a user in Redis with an expiration time."""
+    """
+    Create a temporary token containing call participant and conversation details.
+    
+    Parameters:
+        caller_name: Optional name associated with the caller.
+        caller_type: Optional type associated with the caller.
+        expiration_seconds: Number of seconds before the token expires.
+    
+    Returns:
+        The generated call token.
+    """
     if redis_client is None:
         raise Exception("Redis client is not initialized.")
 
@@ -212,7 +246,14 @@ async def set_call_token(
 
 
 async def consume_call_token(token: str) -> Optional[Dict]:
-    """Gets and consumes a call token once."""
+    """Retrieve and consume a call token.
+    
+    Parameters:
+    	token (str): The token to retrieve.
+    
+    Returns:
+    	Optional[Dict]: The token payload, or `None` if the token does not exist.
+    """
     if redis_client is None:
         raise Exception("Redis client is not initialized.")
 
@@ -234,7 +275,16 @@ async def get_call_token(token: str) -> Optional[Dict]:
 
 
 async def get_contact_by_phone(user_uuid: str, phone_number: str) -> Optional[Dict]:
-    """Find a contact by normalized phone number for a specific user."""
+    """
+    Find a user's contact by phone number.
+    
+    Parameters:
+    	user_uuid (str): The user's UUID.
+    	phone_number (str): The phone number to normalize and search for.
+    
+    Returns:
+    	Optional[Dict]: The matching contact details, or `None` if the phone number is empty, no contact matches, or the contacts table is unavailable.
+    """
     if pool is None:
         raise Exception("Database connection pool is not initialized.")
 

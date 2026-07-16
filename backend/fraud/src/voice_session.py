@@ -151,6 +151,14 @@ class _Session:
         caller_phone: str = "",
         caller_name: str | None = None,
     ):
+        """
+        Initialize a session for an incoming call and notify the connected edge device.
+        
+        Parameters:
+        	conversation_id (str): Identifier of the conversation to load or initialize.
+        	caller_phone (str): Phone number associated with the caller.
+        	caller_name (str | None): Name associated with the caller, if available.
+        """
         self.conversation_id = conversation_id
         self.caller_phone = caller_phone
         self.caller_name = caller_name
@@ -196,6 +204,14 @@ class _Session:
         caller_phone: str = "",
         caller_name: str | None = None,
     ):
+        """
+        Notify the connected edge device that a direct call is ready.
+        
+        Parameters:
+            conversation_id (str): Identifier of the conversation associated with the call.
+            caller_phone (str): Caller's phone number.
+            caller_name (str | None): Caller's name, if available.
+        """
         self.conversation_id = conversation_id
         self.caller_phone = caller_phone
         self.caller_name = caller_name

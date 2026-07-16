@@ -171,6 +171,15 @@ async def format_conversation_for_detection(conversation_id: str) -> str:
 
 
 async def call_fraud_detection_api(conversation_text: str) -> Optional[bool]:
+    """
+    Determine whether conversation text is classified as fraudulent by the configured detection service.
+    
+    Parameters:
+        conversation_text (str): Conversation text submitted for classification.
+    
+    Returns:
+        Optional[bool]: `True` for a fraudulent classification, `False` for a non-fraudulent classification, or `None` when detection is unavailable or the response is unrecognized.
+    """
     if not FRAUD_DETECTION_API_URL or not conversation_text:
         return None
     try:
@@ -192,6 +201,16 @@ async def call_fraud_detection_api(conversation_text: str) -> Optional[bool]:
 
 
 def detect_caller_type(caller_phone_number: str, is_known_contact: bool) -> str:
+    """
+    Classify a caller based on phone number availability and contact status.
+    
+    Parameters:
+    	caller_phone_number (str): The caller's phone number.
+    	is_known_contact (bool): Whether the caller is saved as a known contact.
+    
+    Returns:
+    	str: The private, contact, or non-contact caller type.
+    """
     if not caller_phone_number:
         return CALLER_TYPE_PRIVATE
     if is_known_contact:
@@ -209,6 +228,20 @@ async def incoming_call(
     x_email: str | None = Header(None, alias="X-Email"),
     x_installation_id: str | None = Header("", alias="X-Installation-Id"),
 ):
+    """
+    Handle an incoming call and route it through fraud detection or direct-call handling.
+    
+    Parameters:
+        body (IncomingCallRequest): Incoming caller phone number and optional caller name.
+        x_user_id (str | None): Authenticated user identifier from the `X-User-Id` header.
+    
+    Returns:
+        dict: Call status, conversation identifier, caller type, and either fraud-detection
+            information or a direct-call token.
+    
+    Raises:
+        HTTPException: If the `X-User-Id` header is missing.
+    """
     print(
         f"[HTTP] incoming_call: caller={body.phone_number} ({body.caller_name}), user={x_user_id}",
         flush=True,
@@ -324,7 +357,18 @@ async def connect_direct_call(
     body: ConnectCallRequest,
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
-    """Consumes a call token and ensures edge receives a direct-call event."""
+    """
+    Connects an authenticated direct call to the user's active edge session.
+    
+    Raises:
+        HTTPException: If the user header is missing, the call token is invalid,
+            belongs to another user, contains incomplete data, or no active edge
+            session is available.
+    
+    Returns:
+        dict: Acknowledgment containing the conversation and caller details, with
+            ``edge_session_ready`` set to ``True``.
+    """
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
 
@@ -400,7 +444,14 @@ async def get_active_call(
 async def call_end(
     x_user_id: str | None = Header(None, alias="X-User-Id"),
 ):
-    """Call has ended; edge should stop."""
+    """Ends the active call for the authenticated user and notifies connected applications.
+    
+    Parameters:
+    	x_user_id (str | None): User identifier from the `X-User-Id` header.
+    
+    Returns:
+    	dict: A status response indicating that the call ended.
+    """
     if not x_user_id:
         raise HTTPException(status_code=400, detail="Missing X-User-Id header")
     async with sessions_lock:

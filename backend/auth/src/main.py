@@ -84,6 +84,12 @@ redis_client: Optional[aioredis.Redis] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Initialize application database and Redis resources, then clean them up during shutdown.
+    
+    The database schema is prepared before the application starts serving requests. Raises
+    an exception if either resource cannot be initialized.
+    """
     global pool, redis_client
     try:
         pool = await asyncpg.create_pool(DATABASE_URL)
@@ -208,10 +214,31 @@ def verify_password(plain_password, hashed_password):
 
 
 def get_password_hash(password):
+    """
+    Hash a plaintext password for secure storage.
+    
+    Parameters:
+    	password (str): The plaintext password to hash.
+    
+    Returns:
+    	str: The resulting password hash.
+    """
     return pwd_context.hash(password)
 
 
 def normalize_phone_number(phone_number: str) -> str:
+    """
+    Normalize a phone number to its digits-only representation.
+    
+    Parameters:
+        phone_number (str): Phone number text to normalize.
+    
+    Returns:
+        str: The digits-only phone number, with 12-digit Taiwanese numbers beginning with `886` converted to a leading `0` format.
+    
+    Raises:
+        HTTPException: If the input contains no digits.
+    """
     normalized = PHONE_DIGIT_RE.sub("", phone_number or "")
     if not normalized:
         raise HTTPException(status_code=400, detail="phone_number must contain digits.")
@@ -226,6 +253,18 @@ async def create_token(
     user_agent: Optional[str],
     ip_address: Optional[str],
 ) -> str:
+    """
+    Create and persist an authentication token for a user.
+    
+    Parameters:
+    	conn (asyncpg.Connection): Database connection used to store the token.
+    	user_uuid (uuid.UUID): UUID of the user associated with the token.
+    	user_agent (Optional[str]): Client user-agent value.
+    	ip_address (Optional[str]): Client IP address.
+    
+    Returns:
+    	str: The generated authentication token.
+    """
     token = secrets.token_urlsafe(32)
     await conn.execute(
         "INSERT INTO tokens (user_uuid, token, user_agent, ip_address) VALUES ($1, $2, $3, $4)",
@@ -392,6 +431,7 @@ async def delete_user(
 
 @app.get("/api/auth/status", response_model=User)
 async def read_users_me(current_user: UserInDB = Depends(get_current_user)):
+    """Return the authenticated user's details."""
     return current_user
 
 
@@ -401,6 +441,21 @@ async def create_contact(
     current_user: UserInDB = Depends(get_current_user),
     conn: asyncpg.Connection = Depends(get_db_connection),
 ):
+    """
+    Create a contact for the authenticated user.
+    
+    Parameters:
+    	body (ContactCreate): Contact name and phone number to store.
+    	current_user (UserInDB): Authenticated user who owns the contact.
+    	conn (asyncpg.Connection): Database connection used to create the contact.
+    
+    Returns:
+    	Contact: The newly created contact.
+    
+    Raises:
+    	HTTPException: If the name is empty, the phone number is invalid, or the
+    	phone number already exists for the authenticated user.
+    """
     contact_name = body.name.strip()
     if not contact_name:
         raise HTTPException(status_code=400, detail="name cannot be empty.")
@@ -431,6 +486,11 @@ async def list_contacts(
     current_user: UserInDB = Depends(get_current_user),
     conn: asyncpg.Connection = Depends(get_db_connection),
 ):
+    """List the authenticated user's contacts in reverse chronological order.
+    
+    Returns:
+    	list[Contact]: The user's contacts, ordered by creation time from newest to oldest.
+    """
     rows = await conn.fetch(
         """
         SELECT id, name, phone_number, created_at, updated_at
@@ -450,6 +510,20 @@ async def update_contact(
     current_user: UserInDB = Depends(get_current_user),
     conn: asyncpg.Connection = Depends(get_db_connection),
 ):
+    """
+    Update an authenticated user's contact information.
+    
+    Parameters:
+    	contact_id (uuid.UUID): Identifier of the contact to update.
+    	body (ContactUpdate): Updated contact name and phone number.
+    	current_user (UserInDB): Authenticated user who owns the contact.
+    
+    Returns:
+    	Contact: The updated contact.
+    
+    Raises:
+    	HTTPException: If the name is empty, the phone number is already used by the user, or the contact is not found.
+    """
     contact_name = body.name.strip()
     if not contact_name:
         raise HTTPException(status_code=400, detail="name cannot be empty.")
@@ -488,6 +562,20 @@ async def delete_contact(
     current_user: UserInDB = Depends(get_current_user),
     conn: asyncpg.Connection = Depends(get_db_connection),
 ):
+    """
+    Delete a contact belonging to the authenticated user.
+    
+    Parameters:
+        contact_id (uuid.UUID): Identifier of the contact to delete.
+        current_user (UserInDB): Authenticated user who must own the contact.
+        conn (asyncpg.Connection): Database connection used for the deletion.
+    
+    Raises:
+        HTTPException: If the contact does not exist or does not belong to the user.
+    
+    Returns:
+        dict: A success message confirming deletion.
+    """
     deleted_count = await conn.execute(
         "DELETE FROM contacts WHERE id = $1 AND user_uuid = $2",
         contact_id,
