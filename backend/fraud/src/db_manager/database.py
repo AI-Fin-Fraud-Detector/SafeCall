@@ -15,23 +15,6 @@ redis_client: redis.Redis | None = None
 PHONE_DIGIT_RE = re.compile(r"\D+")
 
 
-def normalize_phone_number(phone_number: str) -> str:
-    """Normalize a phone number to its digit-only representation.
-    
-    Converts numbers beginning with `886` and containing 12 digits to the corresponding local format beginning with `0`.
-    
-    Parameters:
-        phone_number (str): The phone number to normalize.
-    
-    Returns:
-        str: The normalized phone number.
-    """
-    normalized = PHONE_DIGIT_RE.sub("", phone_number or "")
-    if normalized.startswith("886") and len(normalized) == 12:
-        return f"0{normalized[3:]}"
-    return normalized
-
-
 async def _init_connection(conn: asyncpg.Connection):
     """
     Configure the PostgreSQL connection to encode and decode JSONB values as JSON.
@@ -314,3 +297,21 @@ async def get_contact_by_phone(user_uuid: str, phone_number: str) -> Optional[Di
             "phone_number": row["phone_number"],
             "normalized_phone_number": row["normalized_phone_number"],
         }
+
+
+def normalize_phone_number(phone_number: str) -> str:
+    """Normalize a phone number to its digit-only representation.
+    
+    Converts numbers beginning with `886` and containing 12 digits to the corresponding local format beginning with `0`.
+    
+    Parameters:
+        phone_number (str): The phone number to normalize.
+    
+    Returns:
+        str: The normalized phone number.
+    """
+    normalized = PHONE_DIGIT_RE.sub("", phone_number or "")
+    if normalized.startswith("886") and len(normalized) == 12:
+        return f"0{normalized[3:]}"
+    return normalized
+

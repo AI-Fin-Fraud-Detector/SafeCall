@@ -1,9 +1,7 @@
 import os
-import re
 import secrets
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime
 from typing import Optional
 
 import asyncpg
@@ -35,47 +33,6 @@ DEVICE_POLL_INTERVAL_SECONDS = int(os.getenv("DEVICE_POLL_INTERVAL_SECONDS", "3"
 # --- Password Hashing & Token URL ---
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
-PHONE_DIGIT_RE = re.compile(r"\D+")
-CONTACTS_SCHEMA_STATEMENTS = [
-    """
-    CREATE TABLE IF NOT EXISTS contacts (
-        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_uuid UUID NOT NULL REFERENCES users(uuid) ON DELETE CASCADE,
-        name VARCHAR(100) NOT NULL,
-        phone_number VARCHAR(32) NOT NULL,
-        normalized_phone_number VARCHAR(32) NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        CONSTRAINT contacts_user_phone_unique UNIQUE (user_uuid, normalized_phone_number)
-    );
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_contacts_user_uuid
-    ON contacts(user_uuid);
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_contacts_user_normalized_phone
-    ON contacts(user_uuid, normalized_phone_number);
-    """,
-    """
-    CREATE OR REPLACE FUNCTION update_contacts_updated_at()
-    RETURNS TRIGGER AS $$
-    BEGIN
-        NEW.updated_at = NOW();
-        RETURN NEW;
-    END;
-    $$ LANGUAGE plpgsql;
-    """,
-    """
-    DROP TRIGGER IF EXISTS set_contacts_updated_at ON contacts;
-    """,
-    """
-    CREATE TRIGGER set_contacts_updated_at
-    BEFORE UPDATE ON contacts
-    FOR EACH ROW
-    EXECUTE FUNCTION update_contacts_updated_at();
-    """,
-]
 
 # --- Database Pool ---
 pool: Optional[asyncpg.Pool] = None
@@ -93,9 +50,6 @@ async def lifespan(app: FastAPI):
     global pool, redis_client
     try:
         pool = await asyncpg.create_pool(DATABASE_URL)
-        async with pool.acquire() as conn:
-            for statement in CONTACTS_SCHEMA_STATEMENTS:
-                await conn.execute(statement)
         print("Database pool created successfully.")
         redis_client = aioredis.from_url(REDIS_URL, decode_responses=True)
         await redis_client.ping()
@@ -154,26 +108,6 @@ class Token(BaseModel):
     token_type: str = "bearer"
 
 
-class ContactBase(BaseModel):
-    name: str
-    phone_number: str
-
-
-class ContactCreate(ContactBase):
-    pass
-
-
-class ContactUpdate(ContactBase):
-    pass
-
-
-class Contact(ContactBase):
-    id: uuid.UUID
-    created_at: datetime
-    updated_at: datetime
-    model_config = ConfigDict(from_attributes=True)
-
-
 # --- Device pairing (QR login) models ---
 class DevicePairResponse(BaseModel):
     device_code: str
@@ -224,27 +158,6 @@ def get_password_hash(password):
     	str: The resulting password hash.
     """
     return pwd_context.hash(password)
-
-
-def normalize_phone_number(phone_number: str) -> str:
-    """
-    Normalize a phone number to its digits-only representation.
-    
-    Parameters:
-        phone_number (str): Phone number text to normalize.
-    
-    Returns:
-        str: The digits-only phone number, with 12-digit Taiwanese numbers beginning with `886` converted to a leading `0` format.
-    
-    Raises:
-        HTTPException: If the input contains no digits.
-    """
-    normalized = PHONE_DIGIT_RE.sub("", phone_number or "")
-    if not normalized:
-        raise HTTPException(status_code=400, detail="phone_number must contain digits.")
-    if normalized.startswith("886") and len(normalized) == 12:
-        return f"0{normalized[3:]}"
-    return normalized
 
 
 async def create_token(
@@ -433,157 +346,6 @@ async def delete_user(
 async def read_users_me(current_user: UserInDB = Depends(get_current_user)):
     """Return the authenticated user's details."""
     return current_user
-
-
-@app.post("/api/auth/contacts", response_model=Contact, status_code=status.HTTP_201_CREATED)
-async def create_contact(
-    body: ContactCreate,
-    current_user: UserInDB = Depends(get_current_user),
-    conn: asyncpg.Connection = Depends(get_db_connection),
-):
-    """
-    Create a contact for the authenticated user.
-    
-    Parameters:
-    	body (ContactCreate): Contact name and phone number to store.
-    	current_user (UserInDB): Authenticated user who owns the contact.
-    	conn (asyncpg.Connection): Database connection used to create the contact.
-    
-    Returns:
-    	Contact: The newly created contact.
-    
-    Raises:
-    	HTTPException: If the name is empty, the phone number is invalid, or the
-    	phone number already exists for the authenticated user.
-    """
-    contact_name = body.name.strip()
-    if not contact_name:
-        raise HTTPException(status_code=400, detail="name cannot be empty.")
-    normalized_phone_number = normalize_phone_number(body.phone_number)
-
-    try:
-        row = await conn.fetchrow(
-            """
-            INSERT INTO contacts (user_uuid, name, phone_number, normalized_phone_number)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, name, phone_number, created_at, updated_at
-            """,
-            current_user.uuid,
-            contact_name,
-            body.phone_number.strip(),
-            normalized_phone_number,
-        )
-    except asyncpg.exceptions.UniqueViolationError:
-        raise HTTPException(
-            status_code=409,
-            detail="This contact phone number already exists for the current user.",
-        )
-    return Contact(**row)
-
-
-@app.get("/api/auth/contacts", response_model=list[Contact])
-async def list_contacts(
-    current_user: UserInDB = Depends(get_current_user),
-    conn: asyncpg.Connection = Depends(get_db_connection),
-):
-    """List the authenticated user's contacts in reverse chronological order.
-    
-    Returns:
-    	list[Contact]: The user's contacts, ordered by creation time from newest to oldest.
-    """
-    rows = await conn.fetch(
-        """
-        SELECT id, name, phone_number, created_at, updated_at
-        FROM contacts
-        WHERE user_uuid = $1
-        ORDER BY created_at DESC
-        """,
-        current_user.uuid,
-    )
-    return [Contact(**row) for row in rows]
-
-
-@app.put("/api/auth/contacts/{contact_id}", response_model=Contact)
-async def update_contact(
-    contact_id: uuid.UUID,
-    body: ContactUpdate,
-    current_user: UserInDB = Depends(get_current_user),
-    conn: asyncpg.Connection = Depends(get_db_connection),
-):
-    """
-    Update an authenticated user's contact information.
-    
-    Parameters:
-    	contact_id (uuid.UUID): Identifier of the contact to update.
-    	body (ContactUpdate): Updated contact name and phone number.
-    	current_user (UserInDB): Authenticated user who owns the contact.
-    
-    Returns:
-    	Contact: The updated contact.
-    
-    Raises:
-    	HTTPException: If the name is empty, the phone number is already used by the user, or the contact is not found.
-    """
-    contact_name = body.name.strip()
-    if not contact_name:
-        raise HTTPException(status_code=400, detail="name cannot be empty.")
-    normalized_phone_number = normalize_phone_number(body.phone_number)
-
-    try:
-        row = await conn.fetchrow(
-            """
-            UPDATE contacts
-            SET name = $1,
-                phone_number = $2,
-                normalized_phone_number = $3
-            WHERE id = $4 AND user_uuid = $5
-            RETURNING id, name, phone_number, created_at, updated_at
-            """,
-            contact_name,
-            body.phone_number.strip(),
-            normalized_phone_number,
-            contact_id,
-            current_user.uuid,
-        )
-    except asyncpg.exceptions.UniqueViolationError:
-        raise HTTPException(
-            status_code=409,
-            detail="This contact phone number already exists for the current user.",
-        )
-
-    if row is None:
-        raise HTTPException(status_code=404, detail="Contact not found.")
-    return Contact(**row)
-
-
-@app.delete("/api/auth/contacts/{contact_id}")
-async def delete_contact(
-    contact_id: uuid.UUID,
-    current_user: UserInDB = Depends(get_current_user),
-    conn: asyncpg.Connection = Depends(get_db_connection),
-):
-    """
-    Delete a contact belonging to the authenticated user.
-    
-    Parameters:
-        contact_id (uuid.UUID): Identifier of the contact to delete.
-        current_user (UserInDB): Authenticated user who must own the contact.
-        conn (asyncpg.Connection): Database connection used for the deletion.
-    
-    Raises:
-        HTTPException: If the contact does not exist or does not belong to the user.
-    
-    Returns:
-        dict: A success message confirming deletion.
-    """
-    deleted_count = await conn.execute(
-        "DELETE FROM contacts WHERE id = $1 AND user_uuid = $2",
-        contact_id,
-        current_user.uuid,
-    )
-    if deleted_count == "DELETE 0":
-        raise HTTPException(status_code=404, detail="Contact not found.")
-    return {"message": "Contact deleted successfully."}
 
 
 # --- Device pairing (QR login) endpoints ---

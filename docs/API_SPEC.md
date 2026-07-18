@@ -132,7 +132,7 @@ All contact endpoints require:
 Authorization: Bearer <access_token>
 ```
 
-#### POST /api/auth/contacts
+#### POST /api/fraud/contacts
 
 Create a contact.
 
@@ -161,10 +161,10 @@ Create a contact.
 |---|---|
 | `400` | `name cannot be empty.` |
 | `400` | `phone_number must contain digits.` |
-| `401` | Missing or invalid token |
+| `400` | `Missing X-User-Id header` |
 | `409` | `This contact phone number already exists for the current user.` |
 
-#### GET /api/auth/contacts
+#### GET /api/fraud/contacts
 
 List all contacts for the authenticated user.
 
@@ -182,7 +182,7 @@ List all contacts for the authenticated user.
 ]
 ```
 
-#### PUT /api/auth/contacts/{contact_id}
+#### PUT /api/fraud/contacts/{contact_id}
 
 Update a contact.
 
@@ -192,11 +192,11 @@ Same request body as create.
 
 | Status | Detail |
 |---|---|
-| `401` | Missing or invalid token |
+| `400` | `Missing X-User-Id header` |
 | `404` | `Contact not found.` |
 | `409` | `This contact phone number already exists for the current user.` |
 
-#### DELETE /api/auth/contacts/{contact_id}
+#### DELETE /api/fraud/contacts/{contact_id}
 
 Delete a contact.
 

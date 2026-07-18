@@ -16,6 +16,7 @@ from .db_manager import database
 from .notifications import send_push, NotificationPayload
 from .voice_session import _Session
 from .const import CALLER_TYPE_CONTACT, CALLER_TYPE_NON_CONTACT, CALLER_TYPE_PRIVATE
+from .contacts import router as contacts_router
 
 from .protos import voice_pb2_grpc
 
@@ -116,6 +117,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(contacts_router)
 
 
 # ─── Health Check ─────────────────────────────────────────────────────────────
