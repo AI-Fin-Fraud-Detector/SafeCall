@@ -1,3 +1,4 @@
+import logging
 import os
 import secrets
 import uuid
@@ -12,6 +13,8 @@ from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordBearer
 from passlib.context import CryptContext
 from pydantic import BaseModel, ConfigDict
+
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 DB_DATABASE_NAME = os.getenv("DB_DATABASE_NAME")
@@ -41,6 +44,12 @@ redis_client: Optional[aioredis.Redis] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """
+    Initialize application database and Redis resources, then clean them up during shutdown.
+    
+    The database schema is prepared before the application starts serving requests. Raises
+    an exception if either resource cannot be initialized.
+    """
     global pool, redis_client
     try:
         pool = await asyncpg.create_pool(DATABASE_URL)
@@ -142,6 +151,15 @@ def verify_password(plain_password, hashed_password):
 
 
 def get_password_hash(password):
+    """
+    Hash a plaintext password for secure storage.
+    
+    Parameters:
+    	password (str): The plaintext password to hash.
+    
+    Returns:
+    	str: The resulting password hash.
+    """
     return pwd_context.hash(password)
 
 
@@ -151,6 +169,18 @@ async def create_token(
     user_agent: Optional[str],
     ip_address: Optional[str],
 ) -> str:
+    """
+    Create and persist an authentication token for a user.
+    
+    Parameters:
+    	conn (asyncpg.Connection): Database connection used to store the token.
+    	user_uuid (uuid.UUID): UUID of the user associated with the token.
+    	user_agent (Optional[str]): Client user-agent value.
+    	ip_address (Optional[str]): Client IP address.
+    
+    Returns:
+    	str: The generated authentication token.
+    """
     token = secrets.token_urlsafe(32)
     await conn.execute(
         "INSERT INTO tokens (user_uuid, token, user_agent, ip_address) VALUES ($1, $2, $3, $4)",
@@ -265,6 +295,16 @@ async def validate_token_for_nginx(
 async def register_user(
     user_data: UserCreate, conn: asyncpg.Connection = Depends(get_db_connection)
 ):
+    phone_number = user_data.phone_number.strip()
+    if phone_number.startswith("0"):
+        logger.warning(
+            "Deprecated: phone_number '%s' uses local format. "
+            "Pass E.164 format (e.g. +886%s) instead.",
+            phone_number,
+            phone_number[1:],
+        )
+        phone_number = "+886" + phone_number[1:]
+
     hashed_password = get_password_hash(user_data.password)
     try:
         new_user_row = await conn.fetchrow(
@@ -276,7 +316,7 @@ async def register_user(
             uuid.uuid4(),
             user_data.name,
             user_data.email,
-            user_data.phone_number,
+            phone_number,
             hashed_password,
         )
         return User(**new_user_row)
@@ -317,6 +357,7 @@ async def delete_user(
 
 @app.get("/api/auth/status", response_model=User)
 async def read_users_me(current_user: UserInDB = Depends(get_current_user)):
+    """Return the authenticated user's details."""
     return current_user
 
 

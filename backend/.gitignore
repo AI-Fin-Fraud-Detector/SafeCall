@@ -16,3 +16,7 @@ dist/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+
+# Local minimal integration test artifacts
+docker-compose.minimal-test.yml
+test_minimal_call_bridge.py

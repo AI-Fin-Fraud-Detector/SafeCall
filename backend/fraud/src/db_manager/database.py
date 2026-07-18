@@ -14,6 +14,9 @@ redis_client: redis.Redis | None = None
 
 
 async def _init_connection(conn: asyncpg.Connection):
+    """
+    Configure the PostgreSQL connection to encode and decode JSONB values as JSON.
+    """
     await conn.set_type_codec(
         "jsonb",
         encoder=json.dumps,
@@ -102,9 +105,23 @@ async def get_user_latest_conversation(
 
 
 async def create_conversation(
-    user_uuid: str, caller_phone_number: str, caller_name: str | None
+    user_uuid: str,
+    caller_phone_number: str,
+    caller_name: str | None,
+    caller_type: str,
 ) -> str:
-    """Creates a new conversation and adds the system message."""
+    """
+    Create a phone conversation for a user with caller metadata.
+    
+    Parameters:
+        user_uuid (str): UUID of the user associated with the conversation.
+        caller_phone_number (str): Phone number of the caller.
+        caller_name (str | None): Optional name of the caller.
+        caller_type (str): Type of caller.
+    
+    Returns:
+        str: The identifier of the newly created conversation.
+    """
     if pool is None:
         raise Exception("Database connection pool is not initialized.")
     async with pool.acquire() as conn:
@@ -116,7 +133,11 @@ async def create_conversation(
             """,
             conversation_id,
             uuid.UUID(user_uuid),
-            {"caller_phone_number": caller_phone_number, "caller_name": caller_name},
+            {
+                "caller_phone_number": caller_phone_number,
+                "caller_name": caller_name,
+                "caller_type": caller_type,
+            },
         )
         print(f"[INFO] Created new conversation {conversation_id} for user {user_uuid}")
         # await add_message(str(conversation_id), "system", SYSTEM_PROMPT) # Use imported SYSTEM_PROMPT
@@ -166,8 +187,25 @@ async def is_fraud_detection_enabled(user_uuid: str) -> bool:
         return result
 
 
-async def set_call_token(caller_id: str, callee_id: str, expiration_seconds: int = 60):
-    """Sets a call token for a user in Redis with an expiration time."""
+async def set_call_token(
+    caller_id: str,
+    callee_id: str,
+    conversation_id: str,
+    caller_name: str | None = None,
+    caller_type: str | None = None,
+    expiration_seconds: int = 60,
+):
+    """
+    Create a temporary token containing call participant and conversation details.
+    
+    Parameters:
+        caller_name: Optional name associated with the caller.
+        caller_type: Optional type associated with the caller.
+        expiration_seconds: Number of seconds before the token expires.
+    
+    Returns:
+        The generated call token.
+    """
     if redis_client is None:
         raise Exception("Redis client is not initialized.")
 
@@ -178,8 +216,81 @@ async def set_call_token(caller_id: str, callee_id: str, expiration_seconds: int
             {
                 "caller": caller_id,
                 "callee": callee_id,
+                "conversation_id": conversation_id,
+                "caller_name": caller_name,
+                "caller_type": caller_type,
             }
         ),
         ex=expiration_seconds,
     )
     return token
+
+
+async def consume_call_token(token: str) -> Optional[Dict]:
+    """Retrieve and consume a call token.
+    
+    Parameters:
+    	token (str): The token to retrieve.
+    
+    Returns:
+    	Optional[Dict]: The token payload, or `None` if the token does not exist.
+    """
+    if redis_client is None:
+        raise Exception("Redis client is not initialized.")
+
+    raw = await redis_client.getdel(f"call_token:{token}")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
+async def get_call_token(token: str) -> Optional[Dict]:
+    """Gets a call token payload without consuming it."""
+    if redis_client is None:
+        raise Exception("Redis client is not initialized.")
+
+    raw = await redis_client.get(f"call_token:{token}")
+    if not raw:
+        return None
+    return json.loads(raw)
+
+
+async def get_contact_by_phone(user_uuid: str, phone_number: str) -> Optional[Dict]:
+    """
+    Find a user's contact by phone number.
+
+    Parameters:
+    	user_uuid (str): The user's UUID.
+    	phone_number (str): The E.164 phone number to search for.
+
+    Returns:
+    	Optional[Dict]: The matching contact details, or `None` if no contact matches or the contacts table is unavailable.
+    """
+    if pool is None:
+        raise Exception("Database connection pool is not initialized.")
+
+    if not phone_number:
+        return None
+
+    async with pool.acquire() as conn:
+        try:
+            row = await conn.fetchrow(
+                """
+                SELECT id, name, phone_number
+                FROM contacts
+                WHERE user_uuid = $1 AND phone_number = $2
+                LIMIT 1
+                """,
+                uuid.UUID(user_uuid),
+                phone_number,
+            )
+        except asyncpg.UndefinedTableError:
+            return None
+        if not row:
+            return None
+        return {
+            "id": str(row["id"]),
+            "name": row["name"],
+            "phone_number": row["phone_number"],
+        }
+
