@@ -1,5 +1,7 @@
 import asyncio
+import logging
 import os
+import re
 import sys
 import uuid
 from concurrent import futures
@@ -10,7 +12,11 @@ import grpc
 import httpx
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
+
+E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
+
+logger = logging.getLogger(__name__)
 
 from .db_manager import database
 from .notifications import send_push, NotificationPayload
@@ -135,6 +141,23 @@ class IncomingCallRequest(BaseModel):
     phone_number: str
     caller_name: str | None = None
 
+    @field_validator("phone_number")
+    @classmethod
+    def validate_phone_e164(cls, v: str) -> str:
+        v = v.strip()
+        if v and v.startswith("0"):
+            logger.warning(
+                "Deprecated: phone_number '%s' uses local format. "
+                "Pass E.164 format (e.g. +886%s) instead.",
+                v,
+                v[1:],
+            )
+            v = "+886" + v[1:]
+        if v and not E164_RE.match(v):
+            raise ValueError(
+                "phone_number must be in E.164 format (e.g. +886912345678)."
+            )
+        return v
 
 class CallEventRequest(BaseModel):
     callee_user_id: str
@@ -255,13 +278,14 @@ async def incoming_call(
     caller_phone_number = body.phone_number.strip()
     contact = await database.get_contact_by_phone(x_user_id, caller_phone_number)
     is_known_contact = contact is not None
-    resolved_caller_name = body.caller_name or (contact["name"] if contact else None)
+    resolved_caller_name_from_request = body.caller_name or (contact["name"] if contact else None)
+    caller_name = (contact["name"] if contact else None) or resolved_caller_name_from_request
     caller_type = detect_caller_type(caller_phone_number, is_known_contact)
 
     conversation_id = await database.create_conversation(
         x_user_id,
         caller_phone_number,
-        resolved_caller_name,
+        caller_name,
         caller_type,
     )
 
@@ -275,7 +299,7 @@ async def incoming_call(
             await session.on_incoming_call(
                 conversation_id,
                 caller_phone_number,
-                resolved_caller_name,
+                caller_name,
             )
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
@@ -289,7 +313,7 @@ async def incoming_call(
                     "type": "incoming_call",
                     "detail": {
                         "phone_number": caller_phone_number,
-                        "caller_name": resolved_caller_name,
+                        "caller_name": caller_name,
                         "conversation_id": conversation_id,
                         "caller_type": caller_type,
                     },
@@ -311,7 +335,7 @@ async def incoming_call(
             caller_phone_number,
             x_user_id,
             conversation_id,
-            resolved_caller_name,
+            caller_name,
             caller_type,
         )
         async with sessions_lock:
@@ -320,7 +344,7 @@ async def incoming_call(
             await session.on_direct_call(
                 conversation_id,
                 caller_phone_number,
-                resolved_caller_name,
+                caller_name,
             )
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
@@ -334,7 +358,7 @@ async def incoming_call(
                     "type": "incoming_call",
                     "detail": {
                         "phone_number": caller_phone_number,
-                        "caller_name": resolved_caller_name,
+                        "caller_name": caller_name,
                         "conversation_id": conversation_id,
                         "caller_type": caller_type,
                         "call_token": call_token,
