@@ -17,9 +17,8 @@ router = APIRouter(prefix="/api/fraud", tags=["contacts"])
 # --- Pydantic Models ---
 
 class ContactBase(BaseModel):
-    name: str
-    phone_number: str
-
+    name: str = Field(max_length=100)
+    phone_number: str = Field(max_length=32)
 
 class ContactCreate(ContactBase):
     pass
