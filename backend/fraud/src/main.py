@@ -300,6 +300,7 @@ async def incoming_call(
                 conversation_id,
                 caller_phone_number,
                 caller_name,
+                caller_type,
             )
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
@@ -345,6 +346,7 @@ async def incoming_call(
                 conversation_id,
                 caller_phone_number,
                 caller_name,
+                caller_type,
             )
         else:
             print(f"[HTTP] No active edge session for user {x_user_id}", flush=True)
@@ -425,7 +427,7 @@ async def connect_direct_call(
     if consumed_data is None:
         raise HTTPException(status_code=404, detail="Invalid or expired call token")
 
-    await session.on_direct_call(conversation_id, caller_phone, caller_name)
+    await session.on_direct_call(conversation_id, caller_phone, caller_name, token_data.get("caller_type"))
 
     return {
         "status": "ok",

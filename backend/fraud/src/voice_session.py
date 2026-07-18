@@ -100,6 +100,7 @@ class _Session:
         self.messages: list[dict] = []
         self.caller_phone: str | None = None
         self.caller_name: str | None = None
+        self.caller_type: str | None = None
 
         self.recorder = None
         self.loop: asyncio.AbstractEventLoop | None = None
@@ -136,20 +137,12 @@ class _Session:
 
     # ─── Call lifecycle ──────────────────────────────────────────────────────
 
-    @property
-    def caller_type(self) -> str | None:
-        """Determine caller type from phone and name."""
-        if not self.caller_phone:
-            return CALLER_TYPE_PRIVATE
-        if not self.caller_name:
-            return CALLER_TYPE_NON_CONTACT
-        return CALLER_TYPE_CONTACT
-
     async def on_incoming_call(
         self,
         conversation_id: str,
         caller_phone: str = "",
         caller_name: str | None = None,
+        caller_type: str | None = None,
     ):
         """
         Initialize a session for an incoming call and notify the connected edge device.
@@ -158,10 +151,12 @@ class _Session:
         	conversation_id (str): Identifier of the conversation to load or initialize.
         	caller_phone (str): Phone number associated with the caller.
         	caller_name (str | None): Name associated with the caller, if available.
+        	caller_type (str | None): Backend-classified caller type (contact, non_contact, private).
         """
         self.conversation_id = conversation_id
         self.caller_phone = caller_phone
         self.caller_name = caller_name
+        self.caller_type = caller_type
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, role, content FROM messages "
@@ -203,6 +198,7 @@ class _Session:
         conversation_id: str,
         caller_phone: str = "",
         caller_name: str | None = None,
+        caller_type: str | None = None,
     ):
         """
         Notify the connected edge device that a direct call is ready.
@@ -211,10 +207,12 @@ class _Session:
             conversation_id (str): Identifier of the conversation associated with the call.
             caller_phone (str): Caller's phone number.
             caller_name (str | None): Caller's name, if available.
+            caller_type (str | None): Backend-classified caller type (contact, non_contact, private).
         """
         self.conversation_id = conversation_id
         self.caller_phone = caller_phone
         self.caller_name = caller_name
+        self.caller_type = caller_type
         await self.response_queue.put(
             voice_pb2.ServerMessage(
                 text_status=make_status(
