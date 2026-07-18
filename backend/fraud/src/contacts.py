@@ -5,7 +5,7 @@ from typing import Optional
 
 import asyncpg
 from fastapi import APIRouter, Header, HTTPException
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from .db_manager import database
 
