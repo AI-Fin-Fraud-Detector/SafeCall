@@ -1,3 +1,4 @@
+import re
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -7,6 +8,8 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel, ConfigDict
 
 from .db_manager import database
+
+E164_RE = re.compile(r"^\+[1-9]\d{1,14}$")
 
 router = APIRouter(prefix="/api/fraud", tags=["contacts"])
 
@@ -47,9 +50,12 @@ async def create_contact(
     if not contact_name:
         raise HTTPException(status_code=400, detail="name cannot be empty.")
 
-    normalized_phone_number = database.normalize_phone_number(body.phone_number)
-    if not normalized_phone_number:
-        raise HTTPException(status_code=400, detail="phone_number must contain digits.")
+    phone_number = body.phone_number.strip()
+    if not E164_RE.match(phone_number):
+        raise HTTPException(
+            status_code=400,
+            detail="phone_number must be in E.164 format (e.g. +886912345678).",
+        )
 
     if not database.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -57,14 +63,13 @@ async def create_contact(
     try:
         row = await database.pool.fetchrow(
             """
-            INSERT INTO contacts (user_uuid, name, phone_number, normalized_phone_number)
-            VALUES ($1, $2, $3, $4)
+            INSERT INTO contacts (user_uuid, name, phone_number)
+            VALUES ($1, $2, $3)
             RETURNING id, name, phone_number, created_at, updated_at
             """,
             uuid.UUID(x_user_id),
             contact_name,
-            body.phone_number.strip(),
-            normalized_phone_number,
+            phone_number,
         )
     except asyncpg.exceptions.UniqueViolationError:
         raise HTTPException(
@@ -110,9 +115,12 @@ async def update_contact(
     if not contact_name:
         raise HTTPException(status_code=400, detail="name cannot be empty.")
 
-    normalized_phone_number = database.normalize_phone_number(body.phone_number)
-    if not normalized_phone_number:
-        raise HTTPException(status_code=400, detail="phone_number must contain digits.")
+    phone_number = body.phone_number.strip()
+    if not E164_RE.match(phone_number):
+        raise HTTPException(
+            status_code=400,
+            detail="phone_number must be in E.164 format (e.g. +886912345678).",
+        )
 
     if not database.pool:
         raise HTTPException(status_code=503, detail="Database unavailable")
@@ -122,14 +130,12 @@ async def update_contact(
             """
             UPDATE contacts
             SET name = $1,
-                phone_number = $2,
-                normalized_phone_number = $3
-            WHERE id = $4 AND user_uuid = $5
+                phone_number = $2
+            WHERE id = $3 AND user_uuid = $4
             RETURNING id, name, phone_number, created_at, updated_at
             """,
             contact_name,
-            body.phone_number.strip(),
-            normalized_phone_number,
+            phone_number,
             contact_id,
             uuid.UUID(x_user_id),
         )

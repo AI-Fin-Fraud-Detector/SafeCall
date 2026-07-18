@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import secrets
 import uuid
 from typing import Dict, Optional
@@ -12,7 +11,6 @@ import redis.asyncio as redis
 pool: asyncpg.Pool | None = None
 # Redis client instance
 redis_client: redis.Redis | None = None
-PHONE_DIGIT_RE = re.compile(r"\D+")
 
 
 async def _init_connection(conn: asyncpg.Connection):
@@ -260,32 +258,31 @@ async def get_call_token(token: str) -> Optional[Dict]:
 async def get_contact_by_phone(user_uuid: str, phone_number: str) -> Optional[Dict]:
     """
     Find a user's contact by phone number.
-    
+
     Parameters:
     	user_uuid (str): The user's UUID.
-    	phone_number (str): The phone number to normalize and search for.
-    
+    	phone_number (str): The E.164 phone number to search for.
+
     Returns:
-    	Optional[Dict]: The matching contact details, or `None` if the phone number is empty, no contact matches, or the contacts table is unavailable.
+    	Optional[Dict]: The matching contact details, or `None` if no contact matches or the contacts table is unavailable.
     """
     if pool is None:
         raise Exception("Database connection pool is not initialized.")
 
-    normalized_phone_number = normalize_phone_number(phone_number)
-    if not normalized_phone_number:
+    if not phone_number:
         return None
 
     async with pool.acquire() as conn:
         try:
             row = await conn.fetchrow(
                 """
-                SELECT id, name, phone_number, normalized_phone_number
+                SELECT id, name, phone_number
                 FROM contacts
-                WHERE user_uuid = $1 AND normalized_phone_number = $2
+                WHERE user_uuid = $1 AND phone_number = $2
                 LIMIT 1
                 """,
                 uuid.UUID(user_uuid),
-                normalized_phone_number,
+                phone_number,
             )
         except asyncpg.UndefinedTableError:
             return None
@@ -295,23 +292,5 @@ async def get_contact_by_phone(user_uuid: str, phone_number: str) -> Optional[Di
             "id": str(row["id"]),
             "name": row["name"],
             "phone_number": row["phone_number"],
-            "normalized_phone_number": row["normalized_phone_number"],
         }
-
-
-def normalize_phone_number(phone_number: str) -> str:
-    """Normalize a phone number to its digit-only representation.
-    
-    Converts numbers beginning with `886` and containing 12 digits to the corresponding local format beginning with `0`.
-    
-    Parameters:
-        phone_number (str): The phone number to normalize.
-    
-    Returns:
-        str: The normalized phone number.
-    """
-    normalized = PHONE_DIGIT_RE.sub("", phone_number or "")
-    if normalized.startswith("886") and len(normalized) == 12:
-        return f"0{normalized[3:]}"
-    return normalized
 

@@ -12,12 +12,14 @@ Tokens are opaque random strings (`secrets.token_urlsafe(32)`) stored in the `to
 
 Create a new user account.
 
+> **Deprecated:** Local-format phone numbers (e.g. `0912345678`) are automatically converted to E.164 (`+886912345678`). Pass E.164 format directly — local format support will be removed in a future release.
+
 **Request body** (`application/json`)
 
 | Field | Type | Description |
 |---|---|---|
 | `email` | string | Unique email address |
-| `phone_number` | string | Unique phone number |
+| `phone_number` | string | Unique phone number (E.164 format preferred, e.g. `+886912345678`) |
 | `name` | string | Display name |
 | `password` | string | Plain-text password (hashed with argon2id) |
 
@@ -141,7 +143,7 @@ Create a contact.
 | Field | Type | Description |
 |---|---|---|
 | `name` | string | Contact display name |
-| `phone_number` | string | Original phone number as entered by app |
+| `phone_number` | string | Phone number in E.164 format (e.g. `+886912345678`) |
 
 **Response `201`**
 
@@ -160,7 +162,7 @@ Create a contact.
 | Status | Detail |
 |---|---|
 | `400` | `name cannot be empty.` |
-| `400` | `phone_number must contain digits.` |
+| `400` | `phone_number must be in E.164 format (e.g. +886912345678).` |
 | `400` | `Missing X-User-Id header` |
 | `409` | `This contact phone number already exists for the current user.` |
 
@@ -188,10 +190,24 @@ Update a contact.
 
 Same request body as create.
 
+**Response `200`**
+
+```json
+{
+  "id": "d8d2c1bd-4db1-4c3e-8ac4-f4af9df6f3bf",
+  "name": "Alice",
+  "phone_number": "+886912345678",
+  "created_at": "2026-07-16T01:23:45.123456+00:00",
+  "updated_at": "2026-07-16T01:30:00.000000+00:00"
+}
+```
+
 **Errors**
 
 | Status | Detail |
 |---|---|
+| `400` | `name cannot be empty.` |
+| `400` | `phone_number must be in E.164 format (e.g. +886912345678).` |
 | `400` | `Missing X-User-Id header` |
 | `404` | `Contact not found.` |
 | `409` | `This contact phone number already exists for the current user.` |

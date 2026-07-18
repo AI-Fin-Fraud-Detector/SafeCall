@@ -5,17 +5,16 @@ CREATE TABLE IF NOT EXISTS contacts (
         ON DELETE CASCADE,
     name VARCHAR(100) NOT NULL,
     phone_number VARCHAR(32) NOT NULL,
-    normalized_phone_number VARCHAR(32) NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    CONSTRAINT contacts_user_phone_unique UNIQUE (user_uuid, normalized_phone_number)
+    CONSTRAINT contacts_user_phone_unique UNIQUE (user_uuid, phone_number)
 );
 
 CREATE INDEX IF NOT EXISTS idx_contacts_user_uuid
 ON contacts(user_uuid);
 
-CREATE INDEX IF NOT EXISTS idx_contacts_user_normalized_phone
-ON contacts(user_uuid, normalized_phone_number);
+CREATE INDEX IF NOT EXISTS idx_contacts_user_phone
+ON contacts(user_uuid, phone_number);
 
 CREATE OR REPLACE FUNCTION update_contacts_updated_at()
 RETURNS TRIGGER AS $$
