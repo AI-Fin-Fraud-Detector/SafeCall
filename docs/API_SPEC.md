@@ -128,7 +128,7 @@ Return the profile of the currently authenticated user.
 These endpoints let the app manage the user's contact list in backend storage.
 Incoming-call routing uses this list to classify callers (`contact` / `non_contact` / `private`).
 
-All contact endpoints require:
+All `/api/fraud/*` endpoints are behind nginx `auth_request`. After token validation, nginx injects `X-User-ID` and `X-Email` headers into the upstream request — clients should **not** send these manually. Clients only need to send:
 
 ```
 Authorization: Bearer <access_token>
@@ -163,8 +163,9 @@ Create a contact.
 |---|---|
 | `400` | `name cannot be empty.` |
 | `400` | `phone_number must be in E.164 format (e.g. +886912345678).` |
-| `400` | `Missing X-User-Id header` |
+| `401` | Missing or invalid token |
 | `409` | `This contact phone number already exists for the current user.` |
+| `503` | `Database unavailable` |
 
 #### GET /api/fraud/contacts
 
@@ -183,6 +184,13 @@ List all contacts for the authenticated user.
   }
 ]
 ```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `401` | Missing or invalid token |
+| `503` | `Database unavailable` |
 
 #### PUT /api/fraud/contacts/{contact_id}
 
@@ -208,9 +216,10 @@ Same request body as create.
 |---|---|
 | `400` | `name cannot be empty.` |
 | `400` | `phone_number must be in E.164 format (e.g. +886912345678).` |
-| `400` | `Missing X-User-Id header` |
+| `401` | Missing or invalid token |
 | `404` | `Contact not found.` |
 | `409` | `This contact phone number already exists for the current user.` |
+| `503` | `Database unavailable` |
 
 #### DELETE /api/fraud/contacts/{contact_id}
 
@@ -228,6 +237,7 @@ Delete a contact.
 |---|---|
 | `401` | Missing or invalid token |
 | `404` | `Contact not found.` |
+| `503` | `Database unavailable` |
 
 ---
 
