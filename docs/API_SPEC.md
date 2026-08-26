@@ -475,7 +475,7 @@ Flow summary:
 }
 ```
 
-A `fraud_alert` or `safe_to_answer` push is sent to `host_mobile` once SSCI computation completes (after 3 inferences, minimum 60s into call).
+After each trigger inference, an `ssci_update` push sends the full SSCI snapshot (`caller_type`, per-identity `scam_threshold`, and the cumulative scores so far) as the frontend renders them over time. Once a threshold is crossed (`scam_probability > scam_threshold`) — but only after `call_age >= SSCI_MAX_DURATION_SECONDS` (120s) and once per call — exactly one final alert push fires: either `fraud_alert` or `safe_to_answer`, keyed to the caller's identity threshold.
 
 **Response `200` (direct call path: fraud disabled or caller is contact)**
 
@@ -823,10 +823,15 @@ Messages include a `metadata` field (JSONB) with fraud detection results. This f
 - **evidence** — proportion of trigger inferences predicting scam (0.0 = all safe, 1.0 = all scam)
 - **agreement** — consistency of predictions (1.0 = unanimous, lower = disagreement)
 - **stability** — inverse of flip count EMA; how stable predictions are over time
-- **scam_probability** — `evidence*0.5 + agreement*0.3 + stability*0.2`
-- **confidence** — `1.0 - scam_probability`
+- **caller_type** — `contact` | `non_contact` | `private`, drives per-identity thresholds and the identity prior; may be `null` before the first caller-type is known
+- **confidence** — raw confidence after evidence × agreement × stability; identity-prior adjusted
+- **scam_probability** — probability of a scam decision at this trigger (= 1 − confidence)
+- **evidence** — proportion of trigger inferences predicting scam (derived from `n_k`/`λ`, not the simple weighted mean shown here)
+- **agreement** — consistency of historical predictions against the latest (beta-smoothed agreement estimate)
+- **stability** — inverse of flip-count EMA over recent triggers; high = stable predictions
+- **scam_threshold** — per-identity threshold this call uses (`contact` 0.40 / `non_contact` 0.50 / `private` 0.55)
 
-Trigger fires every 3 inferences (`INFERENCES_PER_TRIGGER`), but SSCI action (alert/safe-to-answer) only fires **once per call**, after minimum call age ≥ 60s (`SSCI_MAX_DURATION_SECONDS`).
+Trigger fires every 3 inferences (`INFERENCES_PER_TRIGGER`, Δn=6). An **action** — either `fraud_alert` (when `scam_probability > scam_threshold`) or `safe_to_answer` — only fires **once per call**, gated by both a minimum call age ≥ `SSCI_MAX_DURATION_SECONDS` (120s) and the `_ssci_action_started` flag (`voice_session.py`).
 
 
 ### GET /health

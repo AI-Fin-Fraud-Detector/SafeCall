@@ -477,4 +477,12 @@ Sent by: fraud detection session when call ends due to SSCI timeout or manual ha
 
 ---
 
-> **TODO** — additional push notification handling for `host_mobile` is not yet implemented. This section will be filled in once the spec is confirmed.
+The fraud service drives both apps from a single Redis stream — each `POST /notify` (optionally scoped to one app via an optional `app` filter) fans out silently to every matching subscriber except `host_mobile`, which does not run the detection session and only receives inbound calls.
+
+## App: kebbi
+
+`kebbi` is the user's device running fraud detection; it subscribes with `platform` = `apns`. Real-time pushes update the live SSCI panel, drive alerting, and terminate or continue a call on the backend's decision (see `_ssci_action_started`, gated by minimum call age 120s).
+
+## App: host_mobile
+
+`host_mobile` is the host-SIM phone. It receives only silent inbound events for its active call (`fraud_alert` when `scam_probability > scam_threshold`, or a `hangup`/call-end event) and surfaces the result on its Simplified-WhosCall UI — it never sends push data upstream and has no TTS, STT, or detection loop.
