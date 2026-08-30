@@ -37,6 +37,29 @@ services:
       interval: 30s
       retries: 5
       start_period: 2s
+  db-migrate:
+    image: postgres:18-alpine
+    restart: "no"
+    volumes:
+      - ./db:/migrations:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: ${DB_PASSWORD}
+      PGHOST: db
+      PGPORT: ${DB_PORT:-5432}
+      PGUSER: ${DB_USERNAME}
+      PGDATABASE: ${DB_DATABASE_NAME}
+    command: >
+      sh -c "
+        set -e;
+        for f in /migrations/*.sql; do
+          echo \"Running migration: $$f\";
+          psql -v ON_ERROR_STOP=1 -f \"$$f\";
+        done;
+        echo 'All migrations complete';
+      "
   chat:
     build:
       context: chat

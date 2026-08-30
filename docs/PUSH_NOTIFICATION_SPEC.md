@@ -189,7 +189,8 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
   "detail": {
     "phone_number": "+886912345678",
     "caller_name": "Alice",
-    "conversation_id": "550e8400-e29b-41d4-a716-446655440000"
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "caller_type": "non_contact"
   }
 }
 ```
@@ -200,6 +201,7 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
 | `detail.phone_number` | string | Caller's phone number. Empty string `""` means private / no caller ID |
 | `detail.caller_name` | string \| null | Caller's name from the host's contact book. `null` if not saved or private number |
 | `detail.conversation_id` | string (UUID) | The conversation created for this call. Use this to subscribe to real-time message pushes and to fetch the transcript |
+| `detail.caller_type` | `"contact"` \| `"non_contact"` \| `"private"` | Backend caller classification based on saved contacts and caller-id visibility |
 
 **Expected behaviour**
 
@@ -226,7 +228,11 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
 {
   "type": "incoming_call",
   "detail": {
-    "phone_number": "+886912345678"
+    "phone_number": "+886912345678",
+    "caller_name": "Alice",
+    "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+    "caller_type": "contact",
+    "call_token": "abc123..."
   }
 }
 ```
@@ -235,8 +241,12 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
 |---|---|---|
 | `type` | `"incoming_call"` | Notification type identifier |
 | `detail.phone_number` | string | Caller's phone number. Empty string `""` means private / no caller ID |
+| `detail.caller_name` | string \| null | Caller display name if available |
+| `detail.conversation_id` | string (UUID) | Conversation ID created for this call |
+| `detail.caller_type` | `"contact"` \| `"non_contact"` \| `"private"` | Backend caller classification |
+| `detail.call_token` | string | One-time token for `POST /api/fraud/call/connect` (not consumed when backend returns 409) |
 
-> **Note:** No `conversation_id` or `caller_name` is included because no AI session is started. No real-time transcript pushes will follow.
+> **Note:** In direct-call mode there is no AI transcript stream, but `conversation_id` is still provided for call metadata/history and `call_token` is provided for one-time call connection.
 
 **Expected behaviour**
 
@@ -467,4 +477,12 @@ Sent by: fraud detection session when call ends due to SSCI timeout or manual ha
 
 ---
 
-> **TODO** — additional push notification handling for `host_mobile` is not yet implemented. This section will be filled in once the spec is confirmed.
+The fraud service drives both apps from a single Redis stream — each `POST /notify` (optionally scoped to one app via an optional `app` filter) fans out silently to every matching subscriber except `host_mobile`, which does not run the detection session and only receives inbound calls.
+
+## App: kebbi
+
+`kebbi` is the user's device running fraud detection; it subscribes with `platform` = `apns`. Real-time pushes update the live SSCI panel, drive alerting, and terminate or continue a call on the backend's decision (see `_ssci_action_started`, gated by minimum call age 120s).
+
+## App: host_mobile
+
+`host_mobile` is the host-SIM phone. It receives only silent inbound events for its active call (`fraud_alert` when `scam_probability > scam_threshold`, or a `hangup`/call-end event) and surfaces the result on its Simplified-WhosCall UI — it never sends push data upstream and has no TTS, STT, or detection loop.

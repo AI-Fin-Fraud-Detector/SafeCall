@@ -12,12 +12,14 @@ Tokens are opaque random strings (`secrets.token_urlsafe(32)`) stored in the `to
 
 Create a new user account.
 
+> **Deprecated:** Local-format phone numbers (e.g. `0912345678`) are automatically converted to E.164 (`+886912345678`). Pass E.164 format directly — local format support will be removed in a future release.
+
 **Request body** (`application/json`)
 
 | Field | Type | Description |
 |---|---|---|
 | `email` | string | Unique email address |
-| `phone_number` | string | Unique phone number |
+| `phone_number` | string | Unique phone number (E.164 format preferred, e.g. `+886912345678`) |
 | `name` | string | Display name |
 | `password` | string | Plain-text password (hashed with argon2id) |
 
@@ -118,6 +120,124 @@ Return the profile of the currently authenticated user.
 | Status | Detail |
 |---|---|
 | `401` | Missing or invalid token |
+
+---
+
+### Contacts APIs
+
+These endpoints let the app manage the user's contact list in backend storage.
+Incoming-call routing uses this list to classify callers (`contact` / `non_contact` / `private`).
+
+All `/api/fraud/*` endpoints are behind nginx `auth_request`. After token validation, nginx injects `X-User-ID` and `X-Email` headers into the upstream request — clients should **not** send these manually. Clients only need to send:
+
+```
+Authorization: Bearer <access_token>
+```
+
+#### POST /api/fraud/contacts
+
+Create a contact.
+
+**Request body** (`application/json`)
+
+| Field | Type | Description |
+|---|---|---|
+| `name` | string | Contact display name |
+| `phone_number` | string | Phone number in E.164 format (e.g. `+886912345678`) |
+
+**Response `201`**
+
+```json
+{
+  "id": "d8d2c1bd-4db1-4c3e-8ac4-f4af9df6f3bf",
+  "name": "Alice",
+  "phone_number": "+886912345678",
+  "created_at": "2026-07-16T01:23:45.123456+00:00",
+  "updated_at": "2026-07-16T01:23:45.123456+00:00"
+}
+```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `name cannot be empty.` |
+| `400` | `phone_number must be in E.164 format (e.g. +886912345678).` |
+| `401` | Missing or invalid token |
+| `409` | `This contact phone number already exists for the current user.` |
+| `503` | `Database unavailable` |
+
+#### GET /api/fraud/contacts
+
+List all contacts for the authenticated user.
+
+**Response `200`**
+
+```json
+[
+  {
+    "id": "d8d2c1bd-4db1-4c3e-8ac4-f4af9df6f3bf",
+    "name": "Alice",
+    "phone_number": "+886912345678",
+    "created_at": "2026-07-16T01:23:45.123456+00:00",
+    "updated_at": "2026-07-16T01:23:45.123456+00:00"
+  }
+]
+```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `401` | Missing or invalid token |
+| `503` | `Database unavailable` |
+
+#### PUT /api/fraud/contacts/{contact_id}
+
+Update a contact.
+
+Same request body as create.
+
+**Response `200`**
+
+```json
+{
+  "id": "d8d2c1bd-4db1-4c3e-8ac4-f4af9df6f3bf",
+  "name": "Alice",
+  "phone_number": "+886912345678",
+  "created_at": "2026-07-16T01:23:45.123456+00:00",
+  "updated_at": "2026-07-16T01:30:00.000000+00:00"
+}
+```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `name cannot be empty.` |
+| `400` | `phone_number must be in E.164 format (e.g. +886912345678).` |
+| `401` | Missing or invalid token |
+| `404` | `Contact not found.` |
+| `409` | `This contact phone number already exists for the current user.` |
+| `503` | `Database unavailable` |
+
+#### DELETE /api/fraud/contacts/{contact_id}
+
+Delete a contact.
+
+**Response `200`**
+
+```json
+{ "message": "Contact deleted successfully." }
+```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `401` | Missing or invalid token |
+| `404` | `Contact not found.` |
+| `503` | `Database unavailable` |
 
 ---
 
@@ -324,7 +444,12 @@ All `/api/fraud/*` endpoints are behind nginx `auth_request`. After token valida
 
 ### POST /api/fraud/incoming-call
 
-Register an incoming phone call. Creates a conversation and optionally triggers fraud detection (if enabled for the user).
+Register an incoming phone call.
+
+Flow summary:
+- Backend first checks whether caller phone exists in `/api/auth/contacts`.
+- If caller is a saved contact, backend defaults to **direct call** path (no stranger-call fraud flow).
+- Otherwise backend uses user setting `scam_detection` to decide fraud-detection vs direct-call path.
 
 **Request headers**
 
@@ -339,28 +464,35 @@ Register an incoming phone call. Creates a conversation and optionally triggers 
 | `phone_number` | string | Caller's phone number |
 | `caller_name` | string \| null | Caller's name (optional) |
 
-**Response `200` (fraud detection enabled)**
+**Response `200` (fraud detection enabled, non-contact caller)**
 
 ```json
 {
   "status": "ok",
-  "fraud_detection": "enabled"
+  "fraud_detection": "enabled",
+  "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "caller_type": "non_contact"
 }
 ```
 
-A `fraud_alert` or `safe_to_answer` push is sent to `host_mobile` once SSCI computation completes (after 3 inferences, minimum 60s into call).
+After each trigger inference, an `ssci_update` push sends the full SSCI snapshot (`caller_type`, per-identity `scam_threshold`, and the cumulative scores so far) as the frontend renders them over time. Once a threshold is crossed (`scam_probability > scam_threshold`) — but only after `call_age >= SSCI_MAX_DURATION_SECONDS` (120s) and once per call — exactly one final alert push fires: either `fraud_alert` or `safe_to_answer`, keyed to the caller's identity threshold.
 
-**Response `200` (fraud detection disabled)**
+**Response `200` (direct call path: fraud disabled or caller is contact)**
 
 ```json
 {
   "status": "ok",
   "fraud_detection": "disabled",
-  "call_token": "abc123..."
+  "call_token": "abc123...",
+  "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "caller_type": "contact",
+  "is_known_contact": true
 }
 ```
 
 A `direct_call` gRPC status is sent to the edge device; no SSCI computation occurs.
+
+`call_token` can be consumed once via `POST /api/fraud/call/connect` to ensure direct-call handoff can be retried safely.
 
 **Errors**
 
@@ -368,6 +500,43 @@ A `direct_call` gRPC status is sent to the edge device; no SSCI computation occu
 |---|---|
 | `400` | `Missing X-User-Id header`
 |---|---|
+
+---
+
+### POST /api/fraud/call/connect
+
+Consume a one-time call token and trigger direct-call handoff to the active edge session.
+Use this endpoint when app receives a `call_token` and wants to finalize direct call connection.
+If edge session is not connected yet, backend returns `409` and **does not consume** the token.
+
+**Request body** (`application/json`)
+
+| Field | Type | Description |
+|---|---|---|
+| `call_token` | string | One-time token returned by `incoming-call` |
+
+**Response `200`**
+
+```json
+{
+  "status": "ok",
+  "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
+  "caller_phone": "+886912345678",
+  "caller_name": "Alice",
+  "caller_type": "contact",
+  "edge_session_ready": true
+}
+```
+
+**Errors**
+
+| Status | Detail |
+|---|---|
+| `400` | `Missing X-User-Id header` |
+| `400` | `Call token data is incomplete` |
+| `403` | `Call token does not belong to this user` |
+| `409` | `No active edge session. Keep call token and retry.` |
+| `404` | `Invalid or expired call token` |
 
 ---
 
@@ -654,10 +823,15 @@ Messages include a `metadata` field (JSONB) with fraud detection results. This f
 - **evidence** — proportion of trigger inferences predicting scam (0.0 = all safe, 1.0 = all scam)
 - **agreement** — consistency of predictions (1.0 = unanimous, lower = disagreement)
 - **stability** — inverse of flip count EMA; how stable predictions are over time
-- **scam_probability** — `evidence*0.5 + agreement*0.3 + stability*0.2`
-- **confidence** — `1.0 - scam_probability`
+- **caller_type** — `contact` | `non_contact` | `private`, drives per-identity thresholds and the identity prior; may be `null` before the first caller-type is known
+- **confidence** — raw confidence after evidence × agreement × stability; identity-prior adjusted
+- **scam_probability** — probability of a scam decision at this trigger (= 1 − confidence)
+- **evidence** — proportion of trigger inferences predicting scam (derived from `n_k`/`λ`, not the simple weighted mean shown here)
+- **agreement** — consistency of historical predictions against the latest (beta-smoothed agreement estimate)
+- **stability** — inverse of flip-count EMA over recent triggers; high = stable predictions
+- **scam_threshold** — per-identity threshold this call uses (`contact` 0.40 / `non_contact` 0.50 / `private` 0.55)
 
-Trigger fires every 3 inferences (`INFERENCES_PER_TRIGGER`), but SSCI action (alert/safe-to-answer) only fires **once per call**, after minimum call age ≥ 60s (`SSCI_MAX_DURATION_SECONDS`).
+Trigger fires every 3 inferences (`INFERENCES_PER_TRIGGER`, Δn=6). An **action** — either `fraud_alert` (when `scam_probability > scam_threshold`) or `safe_to_answer` — only fires **once per call**, gated by both a minimum call age ≥ `SSCI_MAX_DURATION_SECONDS` (120s) and the `_ssci_action_started` flag (`voice_session.py`).
 
 
 ### GET /health
