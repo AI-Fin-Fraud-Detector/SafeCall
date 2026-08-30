@@ -53,9 +53,10 @@ services:
       PGDATABASE: ${DB_DATABASE_NAME}
     command: >
       sh -c "
+        set -e;
         for f in /migrations/*.sql; do
           echo \"Running migration: $$f\";
-          psql -f \"$$f\";
+          psql -v ON_ERROR_STOP=1 -f \"$$f\";
         done;
         echo 'All migrations complete';
       "

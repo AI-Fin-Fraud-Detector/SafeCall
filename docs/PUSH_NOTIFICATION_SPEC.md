@@ -190,7 +190,7 @@ Sent by: `POST /api/fraud/incoming-call` when the user has fraud detection turne
     "phone_number": "+886912345678",
     "caller_name": "Alice",
     "conversation_id": "550e8400-e29b-41d4-a716-446655440000",
-    "caller_type": "contact"
+    "caller_type": "non_contact"
   }
 }
 ```
