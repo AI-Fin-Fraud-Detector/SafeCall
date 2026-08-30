@@ -24,7 +24,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER set_contacts_updated_at
+CREATE OR REPLACE TRIGGER set_contacts_updated_at
 BEFORE UPDATE ON contacts
 FOR EACH ROW
 EXECUTE FUNCTION update_contacts_updated_at();
