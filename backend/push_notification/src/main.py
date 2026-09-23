@@ -462,20 +462,20 @@ async def send_push(subscription, payload):
             response = await asyncio.to_thread(messaging.send, message)
             print(f"Successfully sent FCM message: {response}")
             return True
+        except messaging.UnregisteredError as ex:
+            # FCM errorCode UNREGISTERED (404): token is permanently invalid, remove it
+            print(f"FCM token unregistered for {endpoint} ({ex}), removing")
+            await database.delete_subscription(endpoint, platform)
+            return False
+        except messaging.SenderIdMismatchError as ex:
+            # FCM errorCode SENDER_ID_MISMATCH (403): usually a server credentials
+            # misconfiguration, so don't delete (it would wipe every subscription)
+            print(
+                f"FCM sender ID mismatch for {endpoint} - check FIREBASE_CREDENTIALS_PATH: {ex}"
+            )
+            return False
         except Exception as ex:
             print(f"FCM push failed for {endpoint}: {ex}")
-            # For FCM, remove invalid/not-found tokens
-            error_str = str(ex)
-            if any(
-                err in error_str
-                for err in [
-                    "registration-token-not-registered",
-                    "NOT_FOUND",
-                    "Requested entity was not found",
-                ]
-            ):
-                print("FCM token invalid/not-found, removing")
-                await database.delete_subscription(endpoint, platform)
             return False
     elif platform == "apns":
         # APNs Token
