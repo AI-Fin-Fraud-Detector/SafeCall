@@ -15,6 +15,9 @@ services:
       DB_DATABASE_NAME: ${DB_DATABASE_NAME}
       PROJECT_PATH: /project/auth
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      LINE_LOGIN_CHANNEL_ID: ${LINE_LOGIN_CHANNEL_ID}
+      LINE_LOGIN_CHANNEL_SECRET: ${LINE_LOGIN_CHANNEL_SECRET}
+      LINE_LOGIN_REDIRECT_URI: ${LINE_LOGIN_REDIRECT_URI}
     depends_on:
       db:
         condition: service_healthy
@@ -129,6 +132,7 @@ services:
       USE_SUPERTONIC_TTS: ${USE_SUPERTONIC_TTS}
       SUPERTONIC_VOICE: ${SUPERTONIC_VOICE}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      LINE_MESSAGING_CHANNEL_ACCESS_TOKEN: ${LINE_MESSAGING_CHANNEL_ACCESS_TOKEN}
     depends_on:
       db:
         condition: service_healthy

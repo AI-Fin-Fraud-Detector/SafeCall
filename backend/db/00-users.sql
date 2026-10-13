@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS users (
     phone_number    VARCHAR(32) NOT NULL UNIQUE,
     hashed_password TEXT NOT NULL,
     scam_detection  BOOLEAN NOT NULL DEFAULT TRUE,
+    line_id         VARCHAR(100),
     created_at      TIMESTAMP DEFAULT NOW(),
     updated_at      TIMESTAMP DEFAULT NOW()
 );

@@ -132,6 +132,8 @@ class _Session:
         self.call_started_at: float | None = None
         self.call_start_datetime: str | None = None  # ISO format datetime when call started
         self.scam_probability: float = 0.0  # Current scam probability from SSCI
+        self.scam_detected: bool = False
+        self.line_alert_sent: bool = False
         # Ordered list of completed SSCI snapshots: {trigger_index, message_id, ssci}
         self.ssci_snapshots: list[dict] = []
 
@@ -157,6 +159,8 @@ class _Session:
         self.caller_phone = caller_phone
         self.caller_name = caller_name
         self.caller_type = caller_type
+        self.scam_detected = False
+        self.line_alert_sent = False
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, role, content FROM messages "
@@ -224,6 +228,62 @@ class _Session:
             )
         )
         print(f"[SESSION] direct_call → user={self.user_uuid}", flush=True)
+
+
+    
+    async def _send_line_fraud_notification(
+        self,
+    ) -> None:
+        if not self.scam_detected:
+            return
+
+        if self.line_alert_sent:
+            return
+
+        try:
+            from .db_manager import database
+            from .line_notification import (
+                send_line_fraud_alert,
+            )
+
+            user_info = await database.get_user_line_info(
+                self.user_uuid
+            )
+
+            if not user_info:
+                print(
+                    "[LINE] User not found.",
+                    flush=True,
+                )
+                return
+
+            line_id = user_info.get("line_id")
+
+            if not line_id:
+                print(
+                    f"[LINE] User {self.user_uuid} "
+                    "has no LINE binding.",
+                    flush=True,
+                )
+                return
+
+            sent = await send_line_fraud_alert(
+                line_user_id=line_id,
+                user_name=user_info.get(
+                    "name",
+                    "SafeCall user",
+                ),
+            )
+
+            if sent:
+                self.line_alert_sent = True
+
+        except Exception as e:
+            print(
+                f"[LINE] Fraud notification error: {e}",
+                flush=True,
+            )
+
 
     async def on_call_end(self, event_type: str):
         """
@@ -692,6 +752,8 @@ class _Session:
                 self.scam_probability = scam_prob  # Update current score
                 await self._update_conversation_metadata(scam_prob)
                 if scam_prob > ssci["scam_threshold"]:
+                    self.scam_detected = True
+                    await self._send_line_fraud_notification()
                     self.ssci_action_task = asyncio.create_task(
                         self._handle_scam_detected(scam_prob, ssci)
                     )
