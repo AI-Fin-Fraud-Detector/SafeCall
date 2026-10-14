@@ -26,7 +26,7 @@ from .const import (
     SSCI_SAFE_WAIT_SECONDS,
 )
 from .ssci import compute_ssci, extract_trigger_results
-from .notifications import NotificationPayload, send_push
+from .notifications import NotificationPayload, notify_user_in_background, send_push
 from .protos import voice_pb2
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -132,6 +132,7 @@ class _Session:
         self.call_started_at: float | None = None
         self.call_start_datetime: str | None = None  # ISO format datetime when call started
         self.scam_probability: float = 0.0  # Current scam probability from SSCI
+        self.scam_notified: bool = False  # notify service already asked this call
         # Ordered list of completed SSCI snapshots: {trigger_index, message_id, ssci}
         self.ssci_snapshots: list[dict] = []
 
@@ -157,6 +158,7 @@ class _Session:
         self.caller_phone = caller_phone
         self.caller_name = caller_name
         self.caller_type = caller_type
+        self.scam_notified = False
         async with self.db_pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT id, role, content FROM messages "
@@ -213,6 +215,7 @@ class _Session:
         self.caller_phone = caller_phone
         self.caller_name = caller_name
         self.caller_type = caller_type
+        self.scam_notified = False
         await self.response_queue.put(
             voice_pb2.ServerMessage(
                 text_status=make_status(
@@ -692,6 +695,9 @@ class _Session:
                 self.scam_probability = scam_prob  # Update current score
                 await self._update_conversation_metadata(scam_prob)
                 if scam_prob > ssci["scam_threshold"]:
+                    if not self.scam_notified and self.user_uuid:
+                        self.scam_notified = True
+                        notify_user_in_background(str(self.user_uuid), "scam_detected")
                     self.ssci_action_task = asyncio.create_task(
                         self._handle_scam_detected(scam_prob, ssci)
                     )
