@@ -133,10 +133,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      push_notification:
-        condition: service_started
-      notify:
-        condition: service_started
       redis:
         condition: service_started
     deploy:
