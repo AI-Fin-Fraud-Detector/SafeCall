@@ -187,30 +187,6 @@ async def is_fraud_detection_enabled(user_uuid: str) -> bool:
         return result
 
 
-async def get_user_line_info(
-    user_uuid: str,
-) -> Optional[Dict]:
-    if pool is None:
-            raise Exception("Database connection pool is not initialized.")
-    async with pool.acquire() as conn:
-        row = await conn.fetchrow(
-            """
-            SELECT name, line_id
-            FROM users
-            WHERE uuid = $1;
-            """,
-            uuid.UUID(user_uuid),
-        )
-
-    if not row:
-        return None
-
-    return {
-        "name": row["name"],
-        "line_id": row["line_id"],
-    }
-
-
 async def set_call_token(
     caller_id: str,
     callee_id: str,
