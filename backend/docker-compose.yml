@@ -93,8 +93,7 @@ services:
             - driver: nvidia
               capabilities: [gpu]
     healthcheck:
-      # test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 5s
       timeout: 10s
       retries: 12
@@ -102,7 +101,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["python", "-m", "http.server", "8000"]
   fraud:
     build:
       context: fraud
