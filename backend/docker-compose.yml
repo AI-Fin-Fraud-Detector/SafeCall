@@ -133,10 +133,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      push_notification:
-        condition: service_started
-      notify:
-        condition: service_started
       redis:
         condition: service_started
     deploy:
@@ -227,13 +223,8 @@ services:
       - "8100:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      auth:
-        condition: service_healthy
-      chat:
-        condition: service_healthy
-      fraud:
-        condition: service_healthy
+    # No depends_on: nginx resolves services at request time (see nginx.conf),
+    # so it can start before, after, or independently of them.
 
 volumes:
   pg_data:
