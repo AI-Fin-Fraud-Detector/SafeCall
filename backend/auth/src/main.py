@@ -464,7 +464,7 @@ async def device_token(
     return {"status": "approved", "access_token": raw, "token_type": "bearer"}
 
 
-@app.get("/api/line/login-url")
+@app.get("/api/auth/line/login-url")
 async def get_line_login_url(
     current_user: UserInDB = Depends(get_current_user),
     r: aioredis.Redis = Depends(get_redis),
@@ -498,7 +498,7 @@ async def get_line_login_url(
 
 
 @app.get(
-    "/api/line/callback",
+    "/api/auth/line/callback",
     response_class=HTMLResponse,
 )
 async def line_login_callback(
@@ -741,7 +741,7 @@ async def line_login_callback(
     )
 
 
-@app.get("/api/line/status")
+@app.get("/api/auth/line/status")
 async def get_line_binding_status(
     current_user: UserInDB = Depends(
         get_current_user
