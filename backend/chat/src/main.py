@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
         )
     llm = LLMPipeline()
     tts_service = TTSService()
-    llm.generate([{"role": "system", "content": "test"}])
+    llm.warmup()
     yield
     await database.close_db_connection()
     await database.close_redis_connection()
