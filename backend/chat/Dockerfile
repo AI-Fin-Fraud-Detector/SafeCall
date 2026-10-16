@@ -117,7 +117,7 @@ RUN --mount=type=secret,id=GIT_AUTH_TOKEN,env=GIT_AUTH_TOKEN,required=true \
     fi && \
     mkdir -p $HOME/models && \
     GH_TOKEN="$GIT_AUTH_TOKEN" gh release download v1.0.0 \
-        --repo "Surveillance2024/SFTLLM" \
+        --repo "AI-Fin-Fraud-Detector/SFTLLM" \
         --pattern "llama3.1_8b_butler_lora.tar.gz" && \
     tar -xzf llama3.1_8b_butler_lora.tar.gz -C "$HOME/models" && \
     rm -f llama3.1_8b_butler_lora.tar.gz

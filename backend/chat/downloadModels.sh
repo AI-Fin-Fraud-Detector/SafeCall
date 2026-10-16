@@ -17,7 +17,7 @@ if [ ! -d "${script_dir}/src/llm_pipeline/llama3.1_8b_butler_lora" ]; then
     apt-get update && apt-get install -y --no-install-recommends gh
   fi
   GH_TOKEN=$GIT_AUTH_TOKEN \
-  gh release download v1.0.0 --repo "Surveillance2024/SFTLLM" --pattern "llama3.1_8b_butler_lora.tar.gz"
+  gh release download v1.0.0 --repo "AI-Fin-Fraud-Detector/SFTLLM" --pattern "llama3.1_8b_butler_lora.tar.gz"
   tar -xzf llama3.1_8b_butler_lora.tar.gz -C "${script_dir}/src/llm_pipeline/"
   rm -rf llama3.1_8b_butler_lora.tar.gz
 fi
