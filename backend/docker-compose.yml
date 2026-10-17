@@ -72,9 +72,6 @@ services:
       args:
         - NONROOT_USERNAME=ubuntu
         - PROJECT_PATH=/project/chat
-      secrets:
-        - HF_TOKEN
-        - GIT_AUTH_TOKEN
     restart: on-failure
     environment:
       DB_HOST: ${DB_HOST}
@@ -86,12 +83,7 @@ services:
       OPENAI_TTS_MODEL: ${OPENAI_TTS_MODEL:-gpt-4o-mini-tts}
       OPENAI_VOICE_MODEL: ${OPENAI_VOICE_MODEL:-alloy}
       FOOD_API_URL: ${FOOD_API_URL}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
+      CHAT_LLM_URL: ${CHAT_LLM_URL}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 5s
