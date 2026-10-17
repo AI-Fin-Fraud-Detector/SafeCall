@@ -57,8 +57,6 @@ RUN --mount=type=cache,dst=${UV_CACHE_DIR},uid=1000,gid=1000 \
     # Project files (workspace members are needed to resolve the lock)
     --mount=type=bind,source=pyproject.toml,target=${PROJECT_PATH}/pyproject.toml \
     --mount=type=bind,source=uv.lock,target=${PROJECT_PATH}/uv.lock \
-    --mount=type=bind,source=src/dialogue/pyproject.toml,target=${PROJECT_PATH}/src/dialogue/pyproject.toml \
-    --mount=type=bind,source=src/db_manager/pyproject.toml,target=${PROJECT_PATH}/src/db_manager/pyproject.toml \
     uv sync --frozen --no-install-project --no-install-workspace --no-dev
 
 # install runtime deps - with project itself
