@@ -13,6 +13,7 @@ members = [
     "chat",
     "db-manager",
     "dialogue",
+    "llm-pipeline",
 ]
 
 [[package]]
@@ -97,6 +98,7 @@ dependencies = [
     { name = "dialogue" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "llm-pipeline" },
     { name = "openai" },
     { name = "python-multipart" },
     { name = "setuptools" },
@@ -109,6 +111,7 @@ requires-dist = [
     { name = "dialogue", editable = "src/dialogue" },
     { name = "fastapi", specifier = ">=0.128.0" },
     { name = "httpx", specifier = ">=0.27.0" },
+    { name = "llm-pipeline", editable = "src/llm_pipeline" },
     { name = "openai", specifier = ">=1.0.0" },
     { name = "python-multipart", specifier = ">=0.0.9" },
     { name = "setuptools", specifier = ">=80.9.0" },
@@ -274,6 +277,17 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/8c/3e/e7e06743294eea2cf02ced6aa0ff2ad237367394e37a0e2b4a1108c67a36/jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:d96b264ab7d34bbb2312dedc47ce07cd53f06835eacbc16dde3761f47c3a9e7f", size = 338537, upload-time = "2025-11-09T20:49:20.317Z" },
     { url = "https://files.pythonhosted.org/packages/2f/9c/6753e6522b8d0ef07d3a3d239426669e984fb0eba15a315cdbc1253904e4/jiter-0.12.0-graalpy312-graalpy250_312_native-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:c24e864cb30ab82311c6425655b0cdab0a98c5d973b065c66a3f020740c2324c", size = 346110, upload-time = "2025-11-09T20:49:21.817Z" },
 ]
+
+[[package]]
+name = "llm-pipeline"
+version = "0.1.0"
+source = { editable = "src/llm_pipeline" }
+dependencies = [
+    { name = "httpx" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "httpx", specifier = ">=0.27.0" }]
 
 [[package]]
 name = "openai"
