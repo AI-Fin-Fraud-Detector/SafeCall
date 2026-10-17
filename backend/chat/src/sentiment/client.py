@@ -8,10 +8,14 @@ SENTIMENT_API_URL = os.getenv("SENTIMENT_API_URL", "").rstrip("/")
 
 
 async def classify_sentiment(text: str) -> dict | None:
-    """呼叫情緒分析服務（POST {SENTIMENT_API_URL}/v1/sentiment）。
+    """Request sentiment for text from the configured API.
 
-    回傳 {"label": "positive|neutral|negative", "scores": {...}}；
-    未設定 SENTIMENT_API_URL 或呼叫失敗時回傳 None，不影響聊天回覆。
+    POST to ``{SENTIMENT_API_URL}/v1/sentiment`` with a five-second HTTP timeout.
+    The base URL is read from the environment when this module is imported.
+    Return the response dictionary if ``label`` is a string and ``scores`` is
+    a dictionary; labels and score values are not otherwise validated.
+    Return None if the URL is empty, the response has an invalid shape, or
+    client, HTTP-status, or JSON-decoding errors occur.
     """
     if not SENTIMENT_API_URL:
         return None
