@@ -106,6 +106,26 @@ async def chat_message(
     x_installation_id: str | None = Header("", alias="X-Installation-Id"),
     text_only: str = Query(None),
 ):
+    """Generate and persist a chat reply, returning JSON or MP3 audio.
+
+    Reuse the user's latest chat conversation unless
+    ``message.initiate_conversation`` is true; create one if none is selected.
+    Only ``text_only="true"`` selects JSON, which includes the reply, message
+    and conversation IDs, user and installation IDs, and ``sentiment``
+    (None when classification is disabled or fails).
+
+    Audio responses carry URL-encoded text and IDs in headers, plus
+    ``X-Sentiment-Label`` and JSON-encoded ``X-Sentiment-Scores`` for truthy
+    sentiment results. Speech generation or audio response construction errors
+    return JSON with the same fields and ``error="TTS generation failed"``.
+    Conversation lookup, persistence, and reply generation errors propagate.
+
+    Raises:
+        HTTPException: With status 400 if ``X-User-Id`` or
+            ``X-Installation-Id`` is missing or empty.
+        ValueError: If the user ID cannot be parsed as a UUID during
+            database access.
+    """
     print(
         f"[DEBUG] Received message from {x_email} ({x_user_id}) on device {x_installation_id}: {message.prompt}"
     )
