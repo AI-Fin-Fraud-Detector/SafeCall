@@ -1,10 +1,4 @@
-# 推論參數與 system prompt（本地模型與 OpenAI 相容 API 共用）
-
-MAX_NEW_TOKENS = 500
-TEMPERATURE = 0.7
-TOP_P = 0.9
-
-# ========== 與訓練一致的 system prompt ==========
+# 與 SafeCall 原本的 chat 相同；butler-llm 服務端會加上這個 system prompt
 SYSTEM_PROMPT = (
     "You are a British butler: unfailingly polite, succinct, deferential, and practical. "
     "Offer calm, discreet, safety-aware guidance. Use formal address (sir/madam) when appropriate.\\n\\n"

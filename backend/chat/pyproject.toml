@@ -8,7 +8,6 @@ dependencies = [
     "db-manager",
     "dialogue",
     "fastapi>=0.128.0",
-    "llm-pipeline",
     "setuptools>=80.9.0",
     "uvicorn>=0.40.0",
     "openai>=1.0.0",
@@ -19,11 +18,9 @@ dependencies = [
 [tool.uv.workspace]
 members = [
     "src/dialogue",
-    "src/llm_pipeline",
     "src/db_manager",
 ]
 
 [tool.uv.sources]
 dialogue = { workspace = true }
-llm-pipeline = { workspace = true }
 db-manager = { workspace = true }
