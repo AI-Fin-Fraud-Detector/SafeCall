@@ -22,7 +22,15 @@ async def classify_sentiment(text: str) -> dict | None:
                 json={"text": text},
             )
             resp.raise_for_status()
-            return resp.json()
+            data = resp.json()
+            if (
+                not isinstance(data, dict)
+                or not isinstance(data.get("label"), str)
+                or not isinstance(data.get("scores"), dict)
+            ):
+                print(f"[WARN] Sentiment API returned an invalid response: {data}")
+                return None
+            return data
     except Exception as e:
         print(f"[WARN] Sentiment API call failed: {e}")
         return None
