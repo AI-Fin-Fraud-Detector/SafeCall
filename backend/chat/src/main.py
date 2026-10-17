@@ -140,8 +140,7 @@ async def chat_message(
     conversation_id = response_data["conversation_id"]
     assistant_message_id = response_data["message_id"]
 
-    # 情緒分析和 TTS 同時進行：兩者互不依賴，這裡先啟動，等需要時再收結果
-    sentiment_task = asyncio.create_task(classify_sentiment(assistant_response))
+    sentiment_task =asyncio.create_task(classify_sentiment(assistant_response))
 
     if text_only == "true":
         sentiment = await sentiment_task
