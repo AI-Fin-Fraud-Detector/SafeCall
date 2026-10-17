@@ -72,9 +72,6 @@ services:
       args:
         - NONROOT_USERNAME=ubuntu
         - PROJECT_PATH=/project/chat
-      secrets:
-        - HF_TOKEN
-        - GIT_AUTH_TOKEN
     restart: on-failure
     environment:
       DB_HOST: ${DB_HOST}
@@ -86,15 +83,9 @@ services:
       OPENAI_TTS_MODEL: ${OPENAI_TTS_MODEL:-gpt-4o-mini-tts}
       OPENAI_VOICE_MODEL: ${OPENAI_VOICE_MODEL:-alloy}
       FOOD_API_URL: ${FOOD_API_URL}
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              capabilities: [gpu]
+      CHAT_LLM_URL: ${CHAT_LLM_URL}
     healthcheck:
-      # test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/').read()"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 5s
       timeout: 10s
       retries: 12
@@ -102,7 +93,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: ["python", "-m", "http.server", "8000"]
   fraud:
     build:
       context: fraud
@@ -131,11 +121,10 @@ services:
       USE_SUPERTONIC_TTS: ${USE_SUPERTONIC_TTS}
       SUPERTONIC_VOICE: ${SUPERTONIC_VOICE}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      NOTIFY_SERVICE_URL: ${NOTIFY_SERVICE_URL:-http://notify:8000}
     depends_on:
       db:
         condition: service_healthy
-      push_notification:
-        condition: service_started
       redis:
         condition: service_started
     deploy:
@@ -184,6 +173,38 @@ services:
     depends_on:
       db:
         condition: service_healthy
+  notify:
+    build:
+      context: ./notify
+      dockerfile: Dockerfile
+      args:
+        - NONROOT_USERNAME=ubuntu
+        - PROJECT_PATH=/project/notify
+    restart: on-failure
+    # No published ports: reachable only on the docker network. nginx forwards
+    # /api/notify/line/* (account binding) and has no route for /internal/*.
+    environment:
+      DB_HOST: ${DB_HOST}
+      DB_PORT: ${DB_PORT}
+      DB_USERNAME: ${DB_USERNAME}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_DATABASE_NAME: ${DB_DATABASE_NAME}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      LINE_LOGIN_CHANNEL_ID: ${LINE_LOGIN_CHANNEL_ID}
+      LINE_LOGIN_CHANNEL_SECRET: ${LINE_LOGIN_CHANNEL_SECRET}
+      LINE_LOGIN_REDIRECT_URI: ${LINE_LOGIN_REDIRECT_URI}
+      LINE_MESSAGING_CHANNEL_ACCESS_TOKEN: ${LINE_MESSAGING_CHANNEL_ACCESS_TOKEN}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://localhost:8000/health'); exit(0 if response.status in (200, 201, 202) else 1)"]
+      interval: 5s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
   redis:
     image: redis:8-alpine
     restart: on-failure
@@ -194,13 +215,8 @@ services:
       - "8100:80"
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      auth:
-        condition: service_healthy
-      chat:
-        condition: service_healthy
-      fraud:
-        condition: service_healthy
+    # No depends_on: nginx resolves services at request time (see nginx.conf),
+    # so it can start before, after, or independently of them.
 
 volumes:
   pg_data:

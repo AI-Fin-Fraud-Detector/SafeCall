@@ -1,3 +1,4 @@
-from .pipeline import SYSTEM_PROMPT, LLMPipeline
+from .config import SYSTEM_PROMPT
+from .pipeline import LLMPipeline
 
-all = ["LLMPipeline", "SYSTEM_PROMPT"]
+__all__ = ["LLMPipeline", "SYSTEM_PROMPT"]
