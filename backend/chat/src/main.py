@@ -13,6 +13,7 @@ from .db_manager import database, get_user_latest_conversation
 # Import specific functions needed.
 from .dialogue.conversation_manager import handle_chat_message  # New import
 from .llm_pipeline import LLMPipeline  # SYSTEM_PROMPT no longer directly imported here
+from .sentiment import classify_sentiment
 from .tts_service import TTSService
 
 
@@ -138,31 +139,40 @@ async def chat_message(
     conversation_id = response_data["conversation_id"]
     assistant_message_id = response_data["message_id"]
 
+    # 情緒分析和 TTS 同時進行：兩者互不依賴，這裡先啟動，等需要時再收結果
+    sentiment_task = asyncio.create_task(classify_sentiment(assistant_response))
+
     if text_only == "true":
+        sentiment = await sentiment_task
         return {
             "message": assistant_response,
             "message_id": assistant_message_id,
             "conversation_id": conversation_id,
             "recipient_user_id": x_user_id,
             "source_installation_id": x_installation_id,
+            "sentiment": sentiment,
         }
 
     # Generate audio from text using TTS service
     try:
         audio_bytes = await tts_service.generate_speech_bytes(assistant_response)
+        sentiment = await sentiment_task
 
         # Create response with audio file and text in headers
+        headers = {
+            "X-Response-Text": urllib.parse.quote(assistant_response),
+            "X-Message-Id": assistant_message_id,
+            "X-Conversation-Id": conversation_id,
+            "X-Recipient-User-Id": x_user_id,
+            "X-Source-Installation-Id": x_installation_id,
+            "Content-Disposition": "attachment; filename=response.mp3",
+        }
+        if sentiment:
+            headers["X-Sentiment"] = sentiment["label"]
         response = Response(
             content=audio_bytes,
             media_type="audio/mpeg",
-            headers={
-                "X-Response-Text": urllib.parse.quote(assistant_response),
-                "X-Message-Id": assistant_message_id,
-                "X-Conversation-Id": conversation_id,
-                "X-Recipient-User-Id": x_user_id,
-                "X-Source-Installation-Id": x_installation_id,
-                "Content-Disposition": "attachment; filename=response.mp3",
-            },
+            headers=headers,
         )
 
         # Asynchronously publish events to Redis (for socket gateway)
@@ -180,6 +190,7 @@ async def chat_message(
 
     except Exception as e:
         print(f"[ERROR] TTS generation failed: {e}")
+        sentiment = await sentiment_task
         # Fallback to JSON response if TTS fails
         return {
             "message": assistant_response,
@@ -187,6 +198,7 @@ async def chat_message(
             "conversation_id": conversation_id,
             "recipient_user_id": x_user_id,
             "source_installation_id": x_installation_id,
+            "sentiment": sentiment,
             "error": "TTS generation failed",
         }
 
