@@ -84,6 +84,8 @@ services:
       OPENAI_VOICE_MODEL: ${OPENAI_VOICE_MODEL:-alloy}
       FOOD_API_URL: ${FOOD_API_URL}
       CHAT_LLM_URL: ${CHAT_LLM_URL}
+      # Sentiment API base URL. Empty disables sentiment classification.
+      SENTIMENT_API_URL: ${SENTIMENT_API_URL:-}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health').read()"]
       interval: 5s

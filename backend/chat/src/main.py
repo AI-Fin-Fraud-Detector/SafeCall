@@ -1,4 +1,5 @@
 import asyncio
+import json
 import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -13,6 +14,7 @@ from .db_manager import database, get_user_latest_conversation
 # Import specific functions needed.
 from .dialogue.conversation_manager import handle_chat_message  # New import
 from .llm_pipeline import LLMPipeline  # SYSTEM_PROMPT no longer directly imported here
+from .sentiment import classify_sentiment
 from .tts_service import TTSService
 
 
@@ -104,6 +106,26 @@ async def chat_message(
     x_installation_id: str | None = Header("", alias="X-Installation-Id"),
     text_only: str = Query(None),
 ):
+    """Generate and persist a chat reply, returning JSON or MP3 audio.
+
+    Reuse the user's latest chat conversation unless
+    ``message.initiate_conversation`` is true; create one if none is selected.
+    Only ``text_only="true"`` selects JSON, which includes the reply, message
+    and conversation IDs, user and installation IDs, and ``sentiment``
+    (None when classification is disabled or fails).
+
+    Audio responses carry URL-encoded text and IDs in headers, plus
+    ``X-Sentiment-Label`` and JSON-encoded ``X-Sentiment-Scores`` for truthy
+    sentiment results. Speech generation or audio response construction errors
+    return JSON with the same fields and ``error="TTS generation failed"``.
+    Conversation lookup, persistence, and reply generation errors propagate.
+
+    Raises:
+        HTTPException: With status 400 if ``X-User-Id`` or
+            ``X-Installation-Id`` is missing or empty.
+        ValueError: If the user ID cannot be parsed as a UUID during
+            database access.
+    """
     print(
         f"[DEBUG] Received message from {x_email} ({x_user_id}) on device {x_installation_id}: {message.prompt}"
     )
@@ -138,31 +160,40 @@ async def chat_message(
     conversation_id = response_data["conversation_id"]
     assistant_message_id = response_data["message_id"]
 
+    sentiment_task =asyncio.create_task(classify_sentiment(assistant_response))
+
     if text_only == "true":
+        sentiment = await sentiment_task
         return {
             "message": assistant_response,
             "message_id": assistant_message_id,
             "conversation_id": conversation_id,
             "recipient_user_id": x_user_id,
             "source_installation_id": x_installation_id,
+            "sentiment": sentiment,
         }
 
     # Generate audio from text using TTS service
     try:
         audio_bytes = await tts_service.generate_speech_bytes(assistant_response)
+        sentiment = await sentiment_task
 
         # Create response with audio file and text in headers
+        headers = {
+            "X-Response-Text": urllib.parse.quote(assistant_response),
+            "X-Message-Id": assistant_message_id,
+            "X-Conversation-Id": conversation_id,
+            "X-Recipient-User-Id": x_user_id,
+            "X-Source-Installation-Id": x_installation_id,
+            "Content-Disposition": "attachment; filename=response.mp3",
+        }
+        if sentiment:
+            headers["X-Sentiment-Label"] = sentiment["label"]
+            headers["X-Sentiment-Scores"] = json.dumps(sentiment["scores"])
         response = Response(
             content=audio_bytes,
             media_type="audio/mpeg",
-            headers={
-                "X-Response-Text": urllib.parse.quote(assistant_response),
-                "X-Message-Id": assistant_message_id,
-                "X-Conversation-Id": conversation_id,
-                "X-Recipient-User-Id": x_user_id,
-                "X-Source-Installation-Id": x_installation_id,
-                "Content-Disposition": "attachment; filename=response.mp3",
-            },
+            headers=headers,
         )
 
         # Asynchronously publish events to Redis (for socket gateway)
@@ -180,6 +211,7 @@ async def chat_message(
 
     except Exception as e:
         print(f"[ERROR] TTS generation failed: {e}")
+        sentiment = await sentiment_task
         # Fallback to JSON response if TTS fails
         return {
             "message": assistant_response,
@@ -187,6 +219,7 @@ async def chat_message(
             "conversation_id": conversation_id,
             "recipient_user_id": x_user_id,
             "source_installation_id": x_installation_id,
+            "sentiment": sentiment,
             "error": "TTS generation failed",
         }
 
