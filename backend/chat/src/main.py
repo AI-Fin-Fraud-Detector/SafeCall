@@ -1,4 +1,5 @@
 import asyncio
+import json
 import urllib.parse
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -168,7 +169,8 @@ async def chat_message(
             "Content-Disposition": "attachment; filename=response.mp3",
         }
         if sentiment:
-            headers["X-Sentiment"] = sentiment["label"]
+            headers["X-Sentiment-Label"] = sentiment["label"]
+            headers["X-Sentiment-Scores"] = json.dumps(sentiment["scores"])
         response = Response(
             content=audio_bytes,
             media_type="audio/mpeg",
