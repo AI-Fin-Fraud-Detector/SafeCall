@@ -190,12 +190,20 @@ async def login_callback(
             if add_friend_url
             else ""
         )
+        # Jump straight to the official account's add-friend page; the button
+        # stays as a fallback if the redirect is blocked.
+        auto_redirect = (
+            f'<meta http-equiv="refresh" content="0;url={html.escape(add_friend_url)}">'
+            if add_friend_url
+            else ""
+        )
         return HTMLResponse(
             f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  {auto_redirect}
   <title>Add SafeCall as a Friend</title>
 </head>
 <body style="font-family: Arial, sans-serif; background: #fff8df; padding: 30px;">
@@ -209,8 +217,7 @@ async def login_callback(
        and bind LINE again.</p>
   </div>
 </body>
-</html>""",
-            status_code=400,
+</html>"""
         )
 
     # 4. persist the binding
