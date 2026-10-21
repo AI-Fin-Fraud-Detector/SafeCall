@@ -19,6 +19,9 @@ AUTHORIZE_URL = "https://access.line.me/oauth2/v2.1/authorize"
 TOKEN_URL = "https://api.line.me/oauth2/v2.1/token"
 USERINFO_URL = "https://api.line.me/oauth2/v2.1/userinfo"
 PUSH_URL = "https://api.line.me/v2/bot/message/push"
+BOT_INFO_URL = "https://api.line.me/v2/bot/info"
+BOT_PROFILE_URL = "https://api.line.me/v2/bot/profile/{line_id}"
+ADD_FRIEND_URL = "https://line.me/R/ti/p/{basic_id}"
 
 OAUTH_STATE_TTL_SECONDS = 600
 
@@ -53,6 +56,44 @@ class LineChannel:
         return False
 
 
+async def is_friend(line_id: str) -> bool:
+    """Whether `line_id` has added the official account as a friend (and not
+    blocked it). LINE accepts pushes to non-friends but never delivers them."""
+    if not MESSAGING_ACCESS_TOKEN:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.get(
+                BOT_PROFILE_URL.format(line_id=line_id),
+                headers={"Authorization": f"Bearer {MESSAGING_ACCESS_TOKEN}"},
+            )
+    except Exception as e:
+        print(f"[LINE] Friendship check error: {e}", flush=True)
+        return False
+    return response.status_code == 200
+
+
+_add_friend_url: str | None = None
+
+
+async def get_add_friend_url() -> str | None:
+    """Add-friend link for the official account (cached after the first lookup)."""
+    global _add_friend_url
+    if _add_friend_url is None and MESSAGING_ACCESS_TOKEN:
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(
+                    BOT_INFO_URL,
+                    headers={"Authorization": f"Bearer {MESSAGING_ACCESS_TOKEN}"},
+                )
+            basic_id = response.json().get("basicId") if response.status_code == 200 else None
+            if basic_id:
+                _add_friend_url = ADD_FRIEND_URL.format(basic_id=basic_id)
+        except Exception as e:
+            print(f"[LINE] Bot info error: {e}", flush=True)
+    return _add_friend_url
+
+
 # ─── Account binding (LINE Login) ────────────────────────────────────────────
 # nginx validates the JWT for login-url / status and injects X-User-ID.
 # The callback is hit by LINE's redirect and carries no token (auth_request off).
@@ -72,6 +113,9 @@ async def get_login_url(x_user_id: str = Header(...)):
         "redirect_uri": LOGIN_REDIRECT_URI,
         "state": state,
         "scope": "openid profile",
+        # Ask the user to add the official account as a friend during login.
+        # Only shown when the LINE Login channel is linked to the official account.
+        "bot_prompt": "aggressive",
     }
     return {"authorization_url": f"{AUTHORIZE_URL}?{urlencode(params)}"}
 
@@ -135,7 +179,41 @@ async def login_callback(
     if not line_user_id:
         raise HTTPException(502, "LINE user ID was not returned.")
 
-    # 3. persist the binding
+    # 3. require friendship: LINE silently drops pushes to non-friends
+    if not await is_friend(line_user_id):
+        print(f"[LINE] Not a friend, binding refused: user_uuid={user_uuid}", flush=True)
+        add_friend_url = await get_add_friend_url()
+        add_friend_link = (
+            f'<p><a href="{html.escape(add_friend_url)}" '
+            f'style="display:inline-block;padding:12px 24px;background:#06C755;'
+            f'color:white;border-radius:8px;text-decoration:none;">Add SafeCall on LINE</a></p>'
+            if add_friend_url
+            else ""
+        )
+        return HTMLResponse(
+            f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Add SafeCall as a Friend</title>
+</head>
+<body style="font-family: Arial, sans-serif; background: #fff8df; padding: 30px;">
+  <div style="max-width: 480px; margin: 60px auto; background: white;
+              padding: 28px; border-radius: 16px; text-align: center;">
+    <h2>Add SafeCall as a Friend</h2>
+    <p style="color:#777;">SafeCall can only send you alerts on LINE after you add
+       the SafeCall official account as a friend.</p>
+    {add_friend_link}
+    <p style="color:#999;font-size:14px;">After adding the friend, return to SafeCall
+       and bind LINE again.</p>
+  </div>
+</body>
+</html>""",
+            status_code=400,
+        )
+
+    # 4. persist the binding
     if not await database.set_line_id(user_uuid, line_user_id):
         raise HTTPException(404, "SafeCall user not found.")
     print(f"[LINE] Bound user_uuid={user_uuid} line_user_id={line_user_id}", flush=True)
@@ -166,4 +244,9 @@ async def login_callback(
 @router.get("/status")
 async def get_binding_status(x_user_id: str = Header(...)):
     user = await database.get_user(x_user_id)
-    return {"bound": bool(user and user.get("line_id"))}
+    line_id = user.get("line_id") if user else None
+    return {
+        "bound": bool(line_id),
+        "friend": bool(line_id) and await is_friend(line_id),
+        "add_friend_url": await get_add_friend_url(),
+    }
