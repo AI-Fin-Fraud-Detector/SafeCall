@@ -11,7 +11,7 @@ Future channels (WhatsApp, mail, ...) plug in here too; web/mobile push stays in
   optional event context (for `scam_detected`: `caller_phone`, `caller_name`, `caller_type`, `scam_probability`).
   nginx has no route for `/internal/*`, so it is not reachable from outside.
 - The service renders a channel-neutral `Notification` (`src/events.py`: title,
-  `(label, value)` fields, level, plain `text`) and sends it on every channel the
+  headline, detail, risk level and score, time, plain `text`) and sends it on every channel the
   user has bound (`CHANNELS` in `src/main.py`).
 - Each channel implements `send(user, notification)` (`src/channels/base.py`) and
   presents it in its own format: LINE renders a Flex Message card

@@ -13,19 +13,19 @@ TAIPEI = timezone(timedelta(hours=8))
 @dataclass
 class Notification:
     event: str
+    # Short label, e.g. "Scam alert".
     title: str
     # Plain-text version, for channels without rich formatting and as a fallback.
     text: str
-    # Ordered (label, value) rows describing the event.
-    fields: list[tuple[str, str]] = field(default_factory=list)
+    # Main subject line (e.g. the caller) and a one-line detail under it.
+    headline: str
+    detail: str = ""
     # "info", or a risk level from risk_level()
     level: str = "info"
     # 0-100 risk score, when the event has one.
     score: int | None = None
-    # Short (label, tone) tags; tone is "safe" | "warning" | "danger".
-    badges: list[tuple[str, str]] = field(default_factory=list)
-    # One-line recommendation for the recipient.
-    advice: str | None = None
+    # When the event happened, in the user's time zone.
+    time: datetime = field(default_factory=lambda: datetime.now(TAIPEI))
 
 
 def risk_level(score: int) -> str:
@@ -40,31 +40,23 @@ def risk_level(score: int) -> str:
     return "danger"
 
 
-# Same wording as the frontend's _riskDescription (call_summary_page.dart).
-RISK_ADVICE = {
-    "safe": "No fraud detected. Stay vigilant.",
-    "caution": "Some suspicious signs detected. Avoid sharing personal information.",
-    "warning": "Significant fraud indicators detected. We recommend ending the call.",
-    "danger": "Highly suspected fraud. Do not share personal information or transfer money.",
-}
-
-# Same labels and tones as the frontend's caller type badge (call_page.dart).
-CALLER_TYPE_BADGES = {
-    "contact": ("Contact", "safe"),
-    "non_contact": ("Unknown number", "warning"),
-    "private": ("Private Number", "danger"),
+# How the caller relates to the user, by fraud's caller_type.
+CALLER_TYPE_LABELS = {
+    "contact": "Saved contact",
+    "non_contact": "Not in contacts",
 }
 
 
 def _scam_detected(user: dict, data: dict) -> Notification:
     name = user.get("name") or "SafeCall user"
-    caller = data.get("caller_phone") or "Private number"
-    if data.get("caller_name"):
-        caller = f"{data['caller_name']} ({caller})"
-    time = datetime.now(TAIPEI).strftime("%Y-%m-%d %H:%M")
+    phone = data.get("caller_phone")
+    caller_name = data.get("caller_name")
 
-    fields = [("User", name), ("Caller", caller), ("Time", time)]
-    badge = CALLER_TYPE_BADGES.get(data.get("caller_type"))
+    headline = caller_name or phone or "Hidden number"
+    detail = [phone] if caller_name and phone else []
+    if data.get("caller_type") in CALLER_TYPE_LABELS:
+        detail.append(CALLER_TYPE_LABELS[data["caller_type"]])
+    detail.append(f"called {name}")
 
     level = "warning"
     score = None
@@ -73,18 +65,17 @@ def _scam_detected(user: dict, data: dict) -> Notification:
         score = round(probability * 100)
         level = risk_level(score)
 
-    lines = [f"SafeCall\n{name}'s phone scam warning!", f"Caller: {caller}"]
+    lines = [f"SafeCall\n{name}'s phone scam warning!", f"Caller: {phone or 'Hidden number'}"]
     if score is not None:
         lines.append(f"Scam risk: {score}%")
     return Notification(
         event="scam_detected",
-        title="Phone scam warning",
+        title="Scam alert",
         text="\n".join(lines),
-        fields=fields,
+        headline=headline,
+        detail=" · ".join(detail),
         level=level,
         score=score,
-        badges=[badge] if badge else [],
-        advice=RISK_ADVICE[level],
     )
 
 
