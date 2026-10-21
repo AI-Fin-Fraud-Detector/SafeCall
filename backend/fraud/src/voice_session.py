@@ -688,6 +688,27 @@ class _Session:
                         )
                     )
 
+            # LINE alert fires on the first trigger that crosses the threshold, without
+            # waiting for the SSCI decision point.
+            if (
+                is_trigger
+                and ssci
+                and ssci["scam_probability"] >= ssci["line_alert_threshold"]
+                and not self.scam_notified
+                and self.user_uuid
+            ):
+                self.scam_notified = True
+                notify_user_in_background(
+                    str(self.user_uuid),
+                    "scam_detected",
+                    {
+                        "caller_phone": self.caller_phone,
+                        "caller_name": self.caller_name,
+                        "caller_type": self.caller_type,
+                        "scam_probability": ssci["scam_probability"],
+                    },
+                )
+
             call_age = time.monotonic() - self.call_started_at if self.call_started_at else 0
             if is_trigger and not self.ssci_action_started and ssci and call_age >= SSCI_MAX_DURATION_SECONDS:
                 self.ssci_action_started = True
@@ -695,9 +716,6 @@ class _Session:
                 self.scam_probability = scam_prob  # Update current score
                 await self._update_conversation_metadata(scam_prob)
                 if scam_prob > ssci["scam_threshold"]:
-                    if not self.scam_notified and self.user_uuid:
-                        self.scam_notified = True
-                        notify_user_in_background(str(self.user_uuid), "scam_detected")
                     self.ssci_action_task = asyncio.create_task(
                         self._handle_scam_detected(scam_prob, ssci)
                     )

@@ -7,11 +7,16 @@ Future channels (WhatsApp, mail, ...) plug in here too; web/mobile push stays in
 ## How it works
 
 - Other services call the **internal** API over the docker network:
-  `POST http://notify:8000/internal/notify` with `{"user_id": "<uuid>", "event": "scam_detected"}`.
+  `POST http://notify:8000/internal/notify` with `{"user_id": "<uuid>", "event": "scam_detected", "data": {...}}`. `data` is
+  optional event context (for `scam_detected`: `caller_phone`, `caller_name`, `caller_type`, `scam_probability`).
   nginx has no route for `/internal/*`, so it is not reachable from outside.
-- The service renders the text (`src/events.py`) and sends it on every channel
-  the user has bound (`CHANNELS` in `src/main.py`).
-- Each channel implements `send(user, text)` (`src/channels/base.py`) and may
+- The service renders a channel-neutral `Notification` (`src/events.py`: title,
+  headline, detail, risk level and score, time, plain `text`) and sends it on every channel the
+  user has bound (`CHANNELS` in `src/main.py`).
+- Each channel implements `send(user, notification)` (`src/channels/base.py`) and
+  presents it in its own format: LINE renders a Flex Message card
+  (`src/channels/line_format.py`), channels without rich formatting use `text`.
+  Each channel may
   expose its own account-binding routes under `/api/notify/<channel>/`, which
   nginx does forward (these must be browser/provider reachable).
 
@@ -19,9 +24,19 @@ Future channels (WhatsApp, mail, ...) plug in here too; web/mobile push stays in
 
 | Route | Auth | Purpose |
 |---|---|---|
-| `GET /api/notify/line/login-url` | JWT (via nginx) | LINE Login authorize URL |
-| `GET /api/notify/line/callback` | none (LINE redirect) | Exchange code, bind `users.line_id` |
-| `GET /api/notify/line/status` | JWT (via nginx) | `{"bound": bool}` |
+| `GET /api/notify/line/login-url` | JWT (via nginx) | LINE Login authorize URL (with `bot_prompt=aggressive`) |
+| `GET /api/notify/line/callback` | none (LINE redirect) | Exchange code, bind `users.line_id`, prompt to add friend |
+| `DELETE /api/notify/line/binding` | JWT (via nginx) | Unbind: clear `users.line_id` |
+| `GET /api/notify/line/status` | JWT (via nginx) | `{"bound": bool, "friend": bool, "add_friend_url": str \| null}` |
+
+LINE accepts pushes to users who have not added (or have blocked) the official
+account but never delivers them. The binding still succeeds, but the success
+page shows an add-friend button and redirects to the add-friend screen, and
+`status.friend` lets the app prompt a user who is not (or no longer) a friend.
+Reloading the callback within 10 minutes re-shows the result, since returning
+from LINE's add-friend screen can reload the already-used URL.
+`bot_prompt` only takes effect when the LINE Login channel is linked to the
+official account (LINE Developers console → LINE Login channel → Basic settings).
 
 ## Configuration
 
