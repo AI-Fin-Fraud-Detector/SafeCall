@@ -15,7 +15,7 @@ LEVEL_STYLES = {
     "safe": ("#1A3A2A", "#66BB6A"),
     "caution": ("#3A2E0A", "#FFCA28"),
     "warning": ("#3A1E0A", "#FF7043"),
-    "danger": ("#390A0A", "#EF5350"),
+    "danger": ("#310909", "#EF5350"),
 }
 
 # LINE limits altText to 400 characters.
