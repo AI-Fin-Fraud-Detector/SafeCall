@@ -48,3 +48,11 @@ async def set_line_id(user_uuid: str, line_id: str) -> bool:
         user_uuid,
     )
     return result != "UPDATE 0"
+
+
+async def clear_line_id(user_uuid: str) -> None:
+    assert pool is not None
+    await pool.execute(
+        "UPDATE users SET line_id = NULL, updated_at = NOW() WHERE uuid = $1",
+        user_uuid,
+    )

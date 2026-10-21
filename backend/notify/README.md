@@ -10,9 +10,13 @@ Future channels (WhatsApp, mail, ...) plug in here too; web/mobile push stays in
   `POST http://notify:8000/internal/notify` with `{"user_id": "<uuid>", "event": "scam_detected", "data": {...}}`. `data` is
   optional event context (for `scam_detected`: `caller_phone`, `caller_name`, `scam_probability`).
   nginx has no route for `/internal/*`, so it is not reachable from outside.
-- The service renders the text (`src/events.py`) and sends it on every channel
-  the user has bound (`CHANNELS` in `src/main.py`).
-- Each channel implements `send(user, text)` (`src/channels/base.py`) and may
+- The service renders a channel-neutral `Notification` (`src/events.py`: title,
+  `(label, value)` fields, level, plain `text`) and sends it on every channel the
+  user has bound (`CHANNELS` in `src/main.py`).
+- Each channel implements `send(user, notification)` (`src/channels/base.py`) and
+  presents it in its own format: LINE renders a Flex Message card
+  (`src/channels/line_format.py`), channels without rich formatting use `text`.
+  Each channel may
   expose its own account-binding routes under `/api/notify/<channel>/`, which
   nginx does forward (these must be browser/provider reachable).
 
@@ -22,6 +26,7 @@ Future channels (WhatsApp, mail, ...) plug in here too; web/mobile push stays in
 |---|---|---|
 | `GET /api/notify/line/login-url` | JWT (via nginx) | LINE Login authorize URL (with `bot_prompt=aggressive`) |
 | `GET /api/notify/line/callback` | none (LINE redirect) | Exchange code, bind `users.line_id`, prompt to add friend |
+| `DELETE /api/notify/line/binding` | JWT (via nginx) | Unbind: clear `users.line_id` |
 | `GET /api/notify/line/status` | JWT (via nginx) | `{"bound": bool, "friend": bool, "add_friend_url": str \| null}` |
 
 LINE accepts pushes to users who have not added (or have blocked) the official

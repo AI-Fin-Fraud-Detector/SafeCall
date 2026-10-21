@@ -10,6 +10,8 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from fastapi.responses import HTMLResponse
 
 from .. import database
+from ..events import Notification
+from .line_format import flex_message
 
 LOGIN_CHANNEL_ID = os.getenv("LINE_LOGIN_CHANNEL_ID", "")
 LOGIN_CHANNEL_SECRET = os.getenv("LINE_LOGIN_CHANNEL_SECRET", "")
@@ -30,7 +32,7 @@ OAUTH_STATE_TTL_SECONDS = 600
 class LineChannel:
     name = "line"
 
-    async def send(self, user: dict, text: str) -> bool:
+    async def send(self, user: dict, notification: Notification) -> bool:
         line_id = user.get("line_id")
         if not line_id:
             print("[LINE] User has no bound LINE account.", flush=True)
@@ -39,7 +41,7 @@ class LineChannel:
             print("[LINE] Messaging channel access token is not configured.", flush=True)
             return False
 
-        payload = {"to": line_id, "messages": [{"type": "text", "text": text}]}
+        payload = {"to": line_id, "messages": [flex_message(notification)]}
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(
@@ -239,6 +241,13 @@ async def _binding_success_page(line_user_id: str, name: str) -> HTMLResponse:
 </body>
 </html>"""
     )
+
+
+@router.delete("/binding")
+async def unbind(x_user_id: str = Header(...)):
+    await database.clear_line_id(x_user_id)
+    print(f"[LINE] Unbound user_uuid={x_user_id}", flush=True)
+    return {"bound": False}
 
 
 @router.get("/status")

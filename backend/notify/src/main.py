@@ -47,11 +47,11 @@ async def notify(body: NotifyRequest):
     if user is None:
         raise HTTPException(404, "User not found.")
 
-    text = render(user, body.data)
+    notification = render(user, body.data)
     delivered = []
     for channel in CHANNELS:
         try:
-            if await channel.send(user, text):
+            if await channel.send(user, notification):
                 delivered.append(channel.name)
         except Exception as e:
             print(f"[notify] {channel.name} failed for {body.user_id}: {e}", flush=True)
