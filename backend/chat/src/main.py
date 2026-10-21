@@ -98,6 +98,16 @@ async def health_check():
     return {"status": "healthy"}
 
 
+async def _classify_and_log_sentiment(text: str, message_id: str) -> dict | None:
+    sentiment = await classify_sentiment(text)
+    if sentiment:
+        print(
+            f"[INFO] Sentiment for message {message_id}: "
+            f"label={sentiment['label']} scores={json.dumps(sentiment['scores'])}"
+        )
+    return sentiment
+
+
 @app.post("/api/chat/")
 async def chat_message(
     message: UserMessage,
@@ -160,7 +170,9 @@ async def chat_message(
     conversation_id = response_data["conversation_id"]
     assistant_message_id = response_data["message_id"]
 
-    sentiment_task =asyncio.create_task(classify_sentiment(assistant_response))
+    sentiment_task = asyncio.create_task(
+        _classify_and_log_sentiment(assistant_response, assistant_message_id)
+    )
 
     if text_only == "true":
         sentiment = await sentiment_task
