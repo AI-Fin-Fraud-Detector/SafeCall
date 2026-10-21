@@ -210,7 +210,7 @@ async def _binding_success_page(line_user_id: str, name: str) -> HTMLResponse:
     add_friend_section = ""
     if add_friend_url:
         safe_url = html.escape(add_friend_url)
-        auto_redirect = f'<meta http-equiv="refresh" content="2;url={safe_url}">'
+        auto_redirect = f'<meta http-equiv="refresh" content="0;url={safe_url}">'
         add_friend_section = f"""
     <p style="color:#c0392b;">Add the SafeCall official account as a friend to receive
        scam alerts on LINE.</p>
