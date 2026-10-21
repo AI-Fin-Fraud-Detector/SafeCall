@@ -704,6 +704,7 @@ class _Session:
                     {
                         "caller_phone": self.caller_phone,
                         "caller_name": self.caller_name,
+                        "caller_type": self.caller_type,
                         "scam_probability": ssci["scam_probability"],
                     },
                 )
