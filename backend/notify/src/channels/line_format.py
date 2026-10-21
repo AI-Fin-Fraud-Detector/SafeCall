@@ -9,13 +9,13 @@ with the level, score bar, headline and detail, then a faint brand/date footer.
 from ..events import Notification
 
 # (card background, accent) per level: the frontend's _riskBg / _riskFg
-# (call_page.dart).
+# (call_page.dart), with the danger background one shade darker.
 LEVEL_STYLES = {
     "info": ("#0A2A3A", "#4FC3F7"),
     "safe": ("#1A3A2A", "#66BB6A"),
     "caution": ("#3A2E0A", "#FFCA28"),
     "warning": ("#3A1E0A", "#FF7043"),
-    "danger": ("#3A0A0A", "#EF5350"),
+    "danger": ("#390A0A", "#EF5350"),
 }
 
 # LINE limits altText to 400 characters.
