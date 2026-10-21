@@ -5,9 +5,6 @@ present it (LINE: Flex Message card, others: plain `text`).
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
-
-TAIPEI = timezone(timedelta(hours=8))
 
 
 @dataclass
@@ -40,12 +37,12 @@ def risk_level(score: int) -> str:
     return "danger"
 
 
-# Same wording as the frontend's _riskDescription (call_summary_page.dart).
+# Short forms of the frontend's _riskDescription (call_summary_page.dart).
 RISK_ADVICE = {
-    "safe": "No fraud detected. Stay vigilant.",
-    "caution": "Some suspicious signs detected. Avoid sharing personal information.",
-    "warning": "Significant fraud indicators detected. We recommend ending the call.",
-    "danger": "Highly suspected fraud. Do not share personal information or transfer money.",
+    "safe": "No fraud detected.",
+    "caution": "Avoid sharing personal information.",
+    "warning": "We recommend ending the call.",
+    "danger": "Do not share personal info or transfer money.",
 }
 
 # Same labels and tones as the frontend's caller type badge (call_page.dart).
@@ -61,9 +58,8 @@ def _scam_detected(user: dict, data: dict) -> Notification:
     caller = data.get("caller_phone") or "Private number"
     if data.get("caller_name"):
         caller = f"{data['caller_name']} ({caller})"
-    time = datetime.now(TAIPEI).strftime("%Y-%m-%d %H:%M")
 
-    fields = [("User", name), ("Caller", caller), ("Time", time)]
+    fields = [("Caller", caller), ("User", name)]
     badge = CALLER_TYPE_BADGES.get(data.get("caller_type"))
 
     level = "warning"
