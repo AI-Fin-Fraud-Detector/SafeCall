@@ -1,4 +1,5 @@
 import html
+import json
 import os
 import secrets
 import uuid
@@ -138,6 +139,13 @@ async def login_callback(
     if not code or not state:
         raise HTTPException(400, "Missing LINE authorization code or state.")
 
+    # Returning from LINE's add-friend screen can reload this URL after the state
+    # and code are spent; re-show the result instead of an error.
+    done_raw = await database.redis_client.get(f"notify:line:done:{state}")
+    if done_raw is not None:
+        done = json.loads(done_raw)
+        return await _binding_success_page(done["line_user_id"], done["name"])
+
     # GETDEL: read the user UUID and invalidate the state in one step.
     user_uuid_raw = await database.redis_client.getdel(f"notify:line:oauth:{state}")
     if user_uuid_raw is None:
@@ -179,59 +187,44 @@ async def login_callback(
     if not line_user_id:
         raise HTTPException(502, "LINE user ID was not returned.")
 
-    # 3. require friendship: LINE silently drops pushes to non-friends
-    if not await is_friend(line_user_id):
-        print(f"[LINE] Not a friend, binding refused: user_uuid={user_uuid}", flush=True)
-        add_friend_url = await get_add_friend_url()
-        add_friend_link = (
-            f'<p><a href="{html.escape(add_friend_url)}" '
-            f'style="display:inline-block;padding:12px 24px;background:#06C755;'
-            f'color:white;border-radius:8px;text-decoration:none;">Add SafeCall on LINE</a></p>'
-            if add_friend_url
-            else ""
-        )
-        # Jump straight to the official account's add-friend page; the button
-        # stays as a fallback if the redirect is blocked.
-        auto_redirect = (
-            f'<meta http-equiv="refresh" content="0;url={html.escape(add_friend_url)}">'
-            if add_friend_url
-            else ""
-        )
-        return HTMLResponse(
-            f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  {auto_redirect}
-  <title>Add SafeCall as a Friend</title>
-</head>
-<body style="font-family: Arial, sans-serif; background: #fff8df; padding: 30px;">
-  <div style="max-width: 480px; margin: 60px auto; background: white;
-              padding: 28px; border-radius: 16px; text-align: center;">
-    <h2>Add SafeCall as a Friend</h2>
-    <p style="color:#777;">SafeCall can only send you alerts on LINE after you add
-       the SafeCall official account as a friend.</p>
-    {add_friend_link}
-    <p style="color:#999;font-size:14px;">After adding the friend, return to SafeCall
-       and bind LINE again.</p>
-  </div>
-</body>
-</html>"""
-        )
-
-    # 4. persist the binding
+    # 3. persist the binding
     if not await database.set_line_id(user_uuid, line_user_id):
         raise HTTPException(404, "SafeCall user not found.")
     print(f"[LINE] Bound user_uuid={user_uuid} line_user_id={line_user_id}", flush=True)
 
-    safe_name = html.escape(line_user.get("name") or "LINE User")
+    name = line_user.get("name") or "LINE User"
+    await database.redis_client.setex(
+        f"notify:line:done:{state}",
+        OAUTH_STATE_TTL_SECONDS,
+        json.dumps({"line_user_id": line_user_id, "name": name}),
+    )
+    return await _binding_success_page(line_user_id, name)
+
+
+async def _binding_success_page(line_user_id: str, name: str) -> HTMLResponse:
+    """Success page. LINE silently drops pushes to non-friends, so a user who has
+    not added the official account also gets an add-friend button and is sent to
+    the add-friend screen automatically."""
+    add_friend_url = None if await is_friend(line_user_id) else await get_add_friend_url()
+    auto_redirect = ""
+    add_friend_section = ""
+    if add_friend_url:
+        safe_url = html.escape(add_friend_url)
+        auto_redirect = f'<meta http-equiv="refresh" content="2;url={safe_url}">'
+        add_friend_section = f"""
+    <p style="color:#c0392b;">Add the SafeCall official account as a friend to receive
+       scam alerts on LINE.</p>
+    <p><a href="{safe_url}"
+          style="display:inline-block;padding:12px 24px;background:#06C755;
+                 color:white;border-radius:8px;text-decoration:none;">Add SafeCall on LINE</a></p>"""
+
     return HTMLResponse(
         f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
+  {auto_redirect}
   <title>LINE Binding Successful</title>
 </head>
 <body style="font-family: Arial, sans-serif; background: #fff8df; padding: 30px;">
@@ -239,8 +232,8 @@ async def login_callback(
               padding: 28px; border-radius: 16px; text-align: center;">
     <div style="font-size: 48px; color: #06C755;">&#10003;</div>
     <h2>LINE Binding Successful</h2>
-    <p>{safe_name}</p>
-    <p style="color:#777;">Your LINE account has been linked to your SafeCall account.</p>
+    <p>{html.escape(name)}</p>
+    <p style="color:#777;">Your LINE account has been linked to your SafeCall account.</p>{add_friend_section}
     <p style="color:#999;font-size:14px;">You can now close this page and return to SafeCall.</p>
   </div>
 </body>
