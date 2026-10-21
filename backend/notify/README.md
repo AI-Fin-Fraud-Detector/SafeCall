@@ -7,7 +7,8 @@ Future channels (WhatsApp, mail, ...) plug in here too; web/mobile push stays in
 ## How it works
 
 - Other services call the **internal** API over the docker network:
-  `POST http://notify:8000/internal/notify` with `{"user_id": "<uuid>", "event": "scam_detected"}`.
+  `POST http://notify:8000/internal/notify` with `{"user_id": "<uuid>", "event": "scam_detected", "data": {...}}`. `data` is
+  optional event context (for `scam_detected`: `caller_phone`, `caller_name`, `scam_probability`).
   nginx has no route for `/internal/*`, so it is not reachable from outside.
 - The service renders the text (`src/events.py`) and sends it on every channel
   the user has bound (`CHANNELS` in `src/main.py`).

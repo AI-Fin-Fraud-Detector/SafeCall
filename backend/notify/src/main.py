@@ -35,6 +35,7 @@ internal = APIRouter(prefix="/internal")
 class NotifyRequest(BaseModel):
     user_id: str
     event: str
+    data: dict = {}
 
 
 @internal.post("/notify")
@@ -46,7 +47,7 @@ async def notify(body: NotifyRequest):
     if user is None:
         raise HTTPException(404, "User not found.")
 
-    text = render(user)
+    text = render(user, body.data)
     delivered = []
     for channel in CHANNELS:
         try:

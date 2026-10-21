@@ -48,6 +48,15 @@ SSCI_SCAM_THRESHOLDS = {
     CALLER_TYPE_NON_CONTACT: 0.50,
     CALLER_TYPE_PRIVATE: 0.55,
 }
+# Per-identity LINE alert thresholds (scam_probability >= threshold → LINE message to
+# the user's bound account). Independent of SSCI_SCAM_THRESHOLDS so the external alert
+# can be tuned without changing the in-call action. Contacts skip fraud detection, so
+# only private and non_contact (stranger) callers apply; None / unrecognized
+# caller_type falls back to the non_contact threshold.
+SSCI_LINE_ALERT_THRESHOLDS = {
+    CALLER_TYPE_PRIVATE: 0.50,
+    CALLER_TYPE_NON_CONTACT: 0.55,
+}
 SSCI_MAX_DURATION_SECONDS = 120   # minimum call age before SSCI action can fire
 SSCI_SCAM_GRACE_SECONDS = 30
 SSCI_SCAM_WAIT_SECONDS = 90

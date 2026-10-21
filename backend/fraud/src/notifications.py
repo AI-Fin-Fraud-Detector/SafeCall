@@ -33,14 +33,14 @@ async def send_push(
 NOTIFY_SERVICE_URL = os.getenv("NOTIFY_SERVICE_URL", "http://notify:8000")
 
 
-async def notify_user(user_id: str, event: str) -> bool:
+async def notify_user(user_id: str, event: str, data: dict | None = None) -> bool:
     """Ask the internal notify service to deliver `event` on the user's bound
     channels (LINE, ...). Never raises; returns whether the call succeeded."""
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             response = await client.post(
                 f"{NOTIFY_SERVICE_URL}/internal/notify",
-                json={"user_id": user_id, "event": event},
+                json={"user_id": user_id, "event": event, "data": data or {}},
             )
         response.raise_for_status()
         return True
@@ -49,5 +49,5 @@ async def notify_user(user_id: str, event: str) -> bool:
         return False
 
 
-def notify_user_in_background(user_id: str, event: str) -> None:
-    asyncio.create_task(notify_user(user_id, event))
+def notify_user_in_background(user_id: str, event: str, data: dict | None = None) -> None:
+    asyncio.create_task(notify_user(user_id, event, data))
