@@ -57,6 +57,39 @@ This service employs the following conversation strategies to guide scammers:
 
 ## API Endpoints
 
+### SSCI risk evaluation
+
+- Every valid prediction updates SSCI (`DELTA_N=2`, `TAU=2`). Failed detection
+  requests do not add a prediction or reset the consecutive-true count.
+- A trailing run of at least two `true` predictions adds a fixed `0.1` to the
+  base score, capped at 1. Further `true` values do not accumulate bonuses;
+  `false` removes the bonus until another run of two `true` values occurs.
+- `scam_probability` remains the public field for the final risk score.
+  `base_scam_probability`, `consecutive_true_count`, and
+  `consecutive_true_bonus` preserve the calculation details. The score is a
+  heuristic, not a calibrated probability; the underlying SSCI confidence
+  conversion is unchanged.
+- Evaluate the latest score at call age 120 seconds, then on each valid new
+  prediction. If no predictions exist at 120 seconds, keep observing.
+- A score strictly above the caller-specific threshold emits one fraud alert
+  per call. Below-threshold scores keep observing; no `safe_to_answer` event or
+  safe-call hangup timer is started. Subsequent `false` predictions update the
+  score but do not retract the alert. Existing fraud-alert grace/hangup timing
+  remains in effect.
+- The develop branch's LINE notification remains independent: it uses
+  `line_alert_threshold` (private 0.50, non-contact/default 0.55, inclusive),
+  does not wait for 120 seconds, and notifies at most once per call. In-call
+  fraud alerts do not bypass the LINE threshold or consume its notification flag.
+
+Run scoring and isolated session-flow regression tests from this directory:
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+The tests mock external I/O and load the session methods without audio/ML
+dependencies; they do not cover real device notifications or service integration.
+
 ### POST /api/fraud/
 Anti-fraud conversation endpoint
 

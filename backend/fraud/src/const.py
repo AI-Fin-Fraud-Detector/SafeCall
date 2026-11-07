@@ -13,12 +13,12 @@ CALLER_TYPE_PRIVATE = "private"          # withheld / no number ("未顯示來�
 
 # ========== SSCI Configuration ==========
 # SSCI (Streaming Scam Confidence Index) Parameters
-# 每次目前判斷約等於 2 句（caller + receiver），所以每 3 次判斷對應 Δn=6。
-INFERENCES_PER_TRIGGER = 3
+# 每次判斷約等於 2 句（caller + receiver），每次有效 prediction 都更新 SSCI。
+INFERENCES_PER_TRIGGER = 1
 SENTENCES_PER_INFERENCE = 2
-DELTA_N = INFERENCES_PER_TRIGGER * SENTENCES_PER_INFERENCE  # = 6
+DELTA_N = INFERENCES_PER_TRIGGER * SENTENCES_PER_INFERENCE  # = 2
 LAMBDA = 12.0
-TAU = 6.0
+TAU = 2.0
 BETA_PRIOR_A = 0.05
 BETA_PRIOR_B = 0.05
 ZETA = 200.0
@@ -58,9 +58,9 @@ SSCI_LINE_ALERT_THRESHOLDS = {
     CALLER_TYPE_NON_CONTACT: 0.55,
 }
 SSCI_MAX_DURATION_SECONDS = 120   # minimum call age before SSCI action can fire
+SSCI_CONSECUTIVE_TRUE_BONUS = 0.1  # fixed bonus for a trailing run of >= 2 True
 SSCI_SCAM_GRACE_SECONDS = 30
 SSCI_SCAM_WAIT_SECONDS = 90
-SSCI_SAFE_WAIT_SECONDS = 180
 
 # ========== ANTI-FRAUD SYSTEM PROMPT (ENGLISH) ==========
 ANTI_FRAUD_SYSTEM_PROMPT = """You are {user_name}, a person who can be reached at phone number {user_phone}.

@@ -372,7 +372,14 @@ The three real-time message pushes (`call_new_message`, `call_update_message`, `
 
 ### 6. `ssci_update`
 
-Sent by: fraud detection session whenever SSCI is computed (trigger boundary).
+Sent by: fraud detection session on every valid prediction (one inference per trigger).
+
+`ssci.scam_probability` is the final risk score, capped at 1. It includes a fixed
+0.1 bonus when the trailing run contains at least two `true` predictions. The bonus
+does not accumulate and is removed on `false`. Additional audit fields are
+`base_scam_probability`, `consecutive_true_count`, and `consecutive_true_bonus`.
+`confidence` retains its original meaning; the adjusted risk score is not a
+calibrated probability.
 
 | Field | Value |
 |---|---|
@@ -400,6 +407,14 @@ Sent by: fraud detection session whenever SSCI is computed (trigger boundary).
 
 Sent by: fraud detection session once per call when `scam_probability` exceeds the per-identity threshold (`ssci.scam_threshold`: contact 0.40 / non_contact 0.50 / private 0.55).
 
+The first evaluation occurs at call age 120 seconds using the latest available
+SSCI. Subsequent valid predictions trigger re-evaluation. Below-threshold results
+remain under observation; a later `false` does not retract an issued alert.
+
+LINE notifications are independent of this event: they use the inclusive
+`ssci.line_alert_threshold` (private 0.50, non-contact/default 0.55), do not wait
+for 120 seconds, and are deduplicated separately from the in-call fraud alert.
+
 | Field | Value |
 |---|---|
 | `silent` | `true` |
@@ -424,7 +439,9 @@ Sent by: fraud detection session once per call when `scam_probability` exceeds t
 
 ### 8. `safe_to_answer`
 
-Sent by: fraud detection session once per call when `scam_probability` does not exceed the per-identity threshold (`ssci.scam_threshold`: contact 0.40 / non_contact 0.50 / private 0.55).
+Legacy event, no longer emitted by the fraud detection session. Below-threshold
+results remain under observation without a safe-to-answer notification or its
+180-second automatic hangup. The payload below documents the legacy format.
 
 | Field | Value |
 |---|---|
@@ -444,7 +461,7 @@ Sent by: fraud detection session once per call when `scam_probability` does not 
 
 **Expected behaviour**
 
-- Suggest that the user answer the call. LLM continues for 180 seconds (3 min). Call auto-ends if user doesn't answer.
+- Legacy clients may still recognize this event; the current session does not emit it.
 
 ---
 

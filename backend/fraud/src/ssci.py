@@ -12,15 +12,14 @@ from .const import (
     SSCI_IDENTITY_PRIOR,
     SSCI_SCAM_THRESHOLDS,
     SSCI_LINE_ALERT_THRESHOLDS,
+    SSCI_CONSECUTIVE_TRUE_BONUS,
     CALLER_TYPE_NON_CONTACT,
 )
 
 
 def extract_trigger_results(raw_results: list[bool]) -> list[bool]:
     """
-    Extract trigger decisions from raw inference results.
-    Takes every INFERENCES_PER_TRIGGER-th result (3, 6, 9, ...).
-    Example: [F, T, F, T, T, T] -> [F, T]
+    Return a copy of all valid predictions (one inference per trigger).
     """
     if not raw_results:
         return []
@@ -46,7 +45,7 @@ def compute_ssci(trigger_results: list[bool], caller_type: str | None = None) ->
 
     k = len(trigger_results)
     y_k = trigger_results[-1]
-    n_values = [DELTA_N * i for i in range(1, k + 1)]  # 6, 12, 18, ...
+    n_values = [DELTA_N * i for i in range(1, k + 1)]  # 2, 4, 6, ...
     n_k = float(n_values[-1])
 
     # Phase 1: Evidence by length
@@ -99,7 +98,16 @@ def compute_ssci(trigger_results: list[bool], caller_type: str | None = None) ->
     prior_weight = SSCI_PRIOR_W_MAX * (1.0 - evidence)
     confidence = (1.0 - prior_weight) * raw_confidence + prior_weight * prior
 
-    scam_probability = confidence if y_k else (1.0 - confidence)
+    base_scam_probability = confidence if y_k else (1.0 - confidence)
+    consecutive_true_count = 0
+    for result in reversed(trigger_results):
+        if not result:
+            break
+        consecutive_true_count += 1
+    consecutive_true_bonus = (
+        SSCI_CONSECUTIVE_TRUE_BONUS if consecutive_true_count >= 2 else 0.0
+    )
+    scam_probability = min(1.0, base_scam_probability + consecutive_true_bonus)
     scam_threshold = SSCI_SCAM_THRESHOLDS.get(
         caller_type, SSCI_SCAM_THRESHOLDS[CALLER_TYPE_NON_CONTACT]
     )
@@ -123,6 +131,9 @@ def compute_ssci(trigger_results: list[bool], caller_type: str | None = None) ->
         "prior_weight": round(prior_weight, 7),
         "confidence": round(confidence, 7),
         "decision_label": "scam" if y_k else "normal",
+        "base_scam_probability": round(base_scam_probability, 7),
+        "consecutive_true_count": consecutive_true_count,
+        "consecutive_true_bonus": consecutive_true_bonus,
         "scam_probability": round(scam_probability, 7),
         "scam_threshold": scam_threshold,
         "line_alert_threshold": line_alert_threshold,
