@@ -30,8 +30,11 @@
 
 **推播頻率／時機**（影響 UI 的 null 處理）：
 
-- `ssci_update`：每 3 輪對話一次（約每 6 句話），不是固定秒數。
-- `fraud_alert` / `safe_to_answer`：整通電話只發一次 —— 通話滿 120 秒後的第一個 SSCI 觸發點。
+- `ssci_update`：每次有效 prediction 更新一次（約每 2 句話），不是固定秒數。`trigger_index` 現在對應有效 prediction 次數。
+- `scam_probability`：最終風險分數，包含連續至少兩次 `true` 的固定 `0.1` 加成（不累積，上限 1）。新增 `base_scam_probability`、`consecutive_true_count`、`consecutive_true_bonus` 供追查；既有欄位及事件格式保持相容。
+- `fraud_alert`：通話滿 120 秒時以最新資料評估，之後每次有效 prediction 重新評估；超過門檻時整通電話只警示一次。後續 `false` 更新分數但不撤銷警示。
+- 未過門檻持續觀察，不再發送 `safe_to_answer`，也不啟動原本的安全接聽倒數掛斷。
+- LINE 通知沿用 develop 的獨立規則：`line_alert_threshold` 為 private 0.50、non_contact／預設 0.55，分數大於等於門檻即通知，不等待 120 秒，每通一次；不影響通話內 `fraud_alert` 的獨立判斷。
 - **第一次收到任何帶 `ssci` 的推播前，前端拿不到 `caller_type` 和 `scam_threshold`** → 這段期間隱藏身分標籤與警戒線即可，UI 必須 null-safe（三種推播型別都要）。
 
 ## 要修改的檔案

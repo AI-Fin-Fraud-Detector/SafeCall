@@ -23,7 +23,6 @@ from .const import (
     SSCI_MAX_DURATION_SECONDS,
     SSCI_SCAM_GRACE_SECONDS,
     SSCI_SCAM_WAIT_SECONDS,
-    SSCI_SAFE_WAIT_SECONDS,
 )
 from .ssci import compute_ssci, extract_trigger_results
 from .notifications import NotificationPayload, notify_user_in_background, send_push
@@ -128,6 +127,8 @@ class _Session:
         self.last_prediction: bool | None = None
         self.ssci_action_started: bool = False
         self.ssci_action_task: asyncio.Task | None = None
+        self.ssci_evaluation_task: asyncio.Task | None = None
+        self.latest_ssci: dict | None = None
         self.detection_task: asyncio.Task | None = None
         self.call_started_at: float | None = None
         self.call_start_datetime: str | None = None  # ISO format datetime when call started
@@ -183,6 +184,7 @@ class _Session:
         self.call_started_at = time.monotonic()
         self.call_start_datetime = datetime.utcnow().isoformat() + "Z"
         self.call_active.set()
+        self.ssci_evaluation_task = asyncio.create_task(self._evaluate_ssci_at_start())
         await self.response_queue.put(
             voice_pb2.ServerMessage(
                 text_status=make_status(
@@ -237,6 +239,8 @@ class _Session:
         
         """
         self.call_active.clear()
+        if self.ssci_evaluation_task and not self.ssci_evaluation_task.done():
+            self.ssci_evaluation_task.cancel()
         self.webrtc_offer_sdp = None
         self._cancel_current_task()
         if self.ssci_action_task and not self.ssci_action_task.done():
@@ -654,6 +658,10 @@ class _Session:
                 ssci = compute_ssci(trigger_results, self.caller_type)
                 if ssci:
                     detection_metadata["detection"]["ssci"] = ssci
+                    self.latest_ssci = ssci
+                    self.scam_probability = ssci["scam_probability"]
+                    await self._evaluate_ssci()
+                    await self._update_conversation_metadata(self.scam_probability)
 
             last_user_msg_id = None
             for msg in reversed(self.messages):
@@ -709,25 +717,43 @@ class _Session:
                     },
                 )
 
-            call_age = time.monotonic() - self.call_started_at if self.call_started_at else 0
-            if is_trigger and not self.ssci_action_started and ssci and call_age >= SSCI_MAX_DURATION_SECONDS:
-                self.ssci_action_started = True
-                scam_prob = ssci.get("scam_probability", 0.5)
-                self.scam_probability = scam_prob  # Update current score
-                await self._update_conversation_metadata(scam_prob)
-                if scam_prob > ssci["scam_threshold"]:
-                    self.ssci_action_task = asyncio.create_task(
-                        self._handle_scam_detected(scam_prob, ssci)
-                    )
-                else:
-                    self.ssci_action_task = asyncio.create_task(
-                        self._handle_safe_to_answer(scam_prob, ssci)
-                    )
-
         except asyncio.CancelledError:
             raise
         except Exception as e:
             print(f"[FRAUD] Detection error: {e}", flush=True)
+
+    async def _evaluate_ssci_at_start(self):
+        """Evaluate the latest evidence at 120 seconds, even without a new prediction."""
+        try:
+            if self.call_started_at is None:
+                return
+            remaining = SSCI_MAX_DURATION_SECONDS - (time.monotonic() - self.call_started_at)
+            await asyncio.sleep(max(0.0, remaining))
+            await self._evaluate_ssci()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            print(f"[SSCI] Initial evaluation error: {e}", flush=True)
+
+    async def _evaluate_ssci(self):
+        """Keep observing below threshold; latch only when an alert is issued."""
+        if (
+            not self.call_active.is_set()
+            or self.call_started_at is None
+            or time.monotonic() - self.call_started_at < SSCI_MAX_DURATION_SECONDS
+            or not self.latest_ssci
+            or self.ssci_action_started
+        ):
+            return
+        ssci = self.latest_ssci
+        scam_prob = ssci["scam_probability"]
+        if scam_prob <= ssci["scam_threshold"]:
+            return
+
+        # No await between the check and latch: timer and prediction evaluations
+        # cannot issue duplicate alerts. Later False results do not clear this latch.
+        self.ssci_action_started = True
+        self.ssci_action_task = asyncio.create_task(self._handle_scam_detected(scam_prob, ssci))
 
     async def _handle_scam_detected(self, scam_prob: float, ssci: dict):
         try:
@@ -757,34 +783,10 @@ class _Session:
         except Exception as e:
             print(f"[SSCI] _handle_scam_detected error: {e}", flush=True)
 
-    async def _handle_safe_to_answer(self, scam_prob: float, ssci: dict):
-        try:
-            print(f"[SSCI] Safe to answer (prob={scam_prob:.4f}) for user={self.user_uuid}", flush=True)
-            await send_push(
-                target_user_id=uuid.UUID(self.user_uuid),
-                payload=NotificationPayload(
-                    silent=False,
-                    android_priority="high",
-                    data={
-                        "type": "safe_to_answer",
-                        "scam_probability": scam_prob,
-                        "ssci": ssci,
-                        "conversation_id": self.conversation_id,
-                    },
-                ),
-                app="kebbi",
-            )
-            await asyncio.sleep(SSCI_SAFE_WAIT_SECONDS)
-            if self.call_active.is_set():
-                print(f"[SSCI] No user answer in {SSCI_SAFE_WAIT_SECONDS}s, ending call: user={self.user_uuid}", flush=True)
-                await self._end_call_due_to_ssci()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            print(f"[SSCI] _handle_safe_to_answer error: {e}", flush=True)
-
     async def _end_call_due_to_ssci(self):
         self.call_active.clear()
+        if self.ssci_evaluation_task and not self.ssci_evaluation_task.done():
+            self.ssci_evaluation_task.cancel()
         self._cancel_current_task()
         await self.response_queue.put(
             voice_pb2.ServerMessage(text_status=make_status("call_end"))
@@ -808,6 +810,8 @@ class _Session:
         
         Clears the active-call state, drops any cached WebRTC offer, and notifies the edge device that the session has become a direct call.
         """
+        if self.ssci_evaluation_task and not self.ssci_evaluation_task.done():
+            self.ssci_evaluation_task.cancel()
         if self.ssci_action_task and not self.ssci_action_task.done():
             self.ssci_action_task.cancel()
         self._cancel_current_task()
@@ -1131,6 +1135,13 @@ class _Session:
         return np.interp(x_target, x_orig, audio)
 
     async def _cleanup(self):
+        ssci_tasks = [
+            task for task in (self.ssci_evaluation_task, self.ssci_action_task)
+            if task is not None
+        ]
+        for task in ssci_tasks:
+            task.cancel()
+        await asyncio.gather(*ssci_tasks, return_exceptions=True)
         if self.recorder:
             try:
                 await asyncio.to_thread(self.recorder.stop)
